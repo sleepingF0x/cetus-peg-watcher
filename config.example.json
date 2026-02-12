@@ -1,0 +1,17 @@
+{
+  "barkUrl": "https://api.day.app/CCNCQ2gQ8NuDg5kuiGbNNN",
+  "items": [
+    {
+      "baseToken": "0x2::sui::SUI",
+      "targetPrice": 3.5,
+      "condition": "above",
+      "pollInterval": 60,
+      "cooldownMinutes": 30
+    },
+    {
+      "baseToken": "0x6864a6f921804860930db6ddbe2e16acdf8504495ea7481637a1c8b9a8fe54b::cetus::CETUS",
+      "targetPrice": 0.3,
+      "condition": "below"
+    }
+  ]
+}
