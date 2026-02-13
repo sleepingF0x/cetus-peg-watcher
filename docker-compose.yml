@@ -4,4 +4,4 @@ services:
     restart: unless-stopped
     volumes:
       - ./config.json:/app/config.json:ro
-      - ./state.json:/app/state.json
+      - ./data:/app/data

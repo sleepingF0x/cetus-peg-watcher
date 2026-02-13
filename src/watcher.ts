@@ -3,7 +3,7 @@ import { getTokenPrice } from './cetus.js';
 import { loadState, saveState, shouldAlert, recordAlert } from './state.js';
 import { sendBarkAlert } from './notifier.js';
 
-const STATE_FILE = 'state.json';
+const STATE_FILE = 'data/state.json';
 
 export async function startWatcher(config: Config) {
   const state = loadState(STATE_FILE);

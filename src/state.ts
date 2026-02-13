@@ -1,15 +1,21 @@
 import fs from 'fs';
+import path from 'path';
 
 export interface AlertState {
   lastAlertTime: Record<string, number>;
 }
 
 export function loadState(filePath: string): AlertState {
-  if (!fs.existsSync(filePath)) {
-    return { lastAlertTime: {} };
-  }
-
   try {
+    const dir = path.dirname(filePath);
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
+    }
+
+    if (!fs.existsSync(filePath)) {
+      return { lastAlertTime: {} };
+    }
+
     const rawData = fs.readFileSync(filePath, 'utf-8').trim();
     if (!rawData) {
       return { lastAlertTime: {} };
