@@ -19,7 +19,12 @@ async function delay(ms: number) {
 
 const SUI_RPC_URL = 'https://fullnode.mainnet.sui.io:443';
 
-async function getDecimals(coinType: string): Promise<number> {
+const decimalsCache = new Map<string, number>();
+
+async function getDecimals(coinType: string): Promise<number | null> {
+  const cached = decimalsCache.get(coinType);
+  if (cached !== undefined) return cached;
+
   try {
     const response = await axios.post(SUI_RPC_URL, {
       jsonrpc: '2.0',
@@ -27,16 +32,17 @@ async function getDecimals(coinType: string): Promise<number> {
       method: 'suix_getCoinMetadata',
       params: [coinType],
     }, {
-      timeout: 10000,
+      timeout: 15000,
     });
 
     if (response.data?.result?.decimals !== undefined) {
+      decimalsCache.set(coinType, response.data.result.decimals);
       return response.data.result.decimals;
     }
-  } catch (error) {
-    console.error(`Error fetching metadata for ${coinType}:`, error);
+  } catch (error: any) {
+    console.error(`Error fetching metadata for ${coinType}: ${error.message}`);
   }
-  return 9;
+  return null;
 }
 
 export async function getTokenPrice(
@@ -53,6 +59,13 @@ export async function getTokenPrice(
         getDecimals(baseToken),
         getDecimals(quoteToken),
       ]);
+
+      if (baseDecimals === null || quoteDecimals === null) {
+        console.error(`[Cetus] Failed to fetch decimals, skipping price calculation`);
+        if (i === retries) return null;
+        await delay(backoffDelays[i]);
+        continue;
+      }
 
       const queryAmount = amount || Math.pow(10, baseDecimals).toString();
 
