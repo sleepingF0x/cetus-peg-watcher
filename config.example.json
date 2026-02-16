@@ -15,7 +15,8 @@
       "alertMode": "avg_percent",
       "condition": "above",
       "pollInterval": 60,
-      "cooldownSeconds": 1800,
+      "alertCooldownSeconds": 1800,
+      "tradeCooldownSeconds": 300,
       "avgWindowMinutes": 10,
       "avgTargetPercent": 103
     },

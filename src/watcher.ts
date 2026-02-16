@@ -74,7 +74,7 @@ export async function startWatcher(config: Config) {
           if (config.trade?.enabled && item.tradeEnabled && tradeSide !== null) {
             const tradeCooldownKey = `${item.baseToken}::${item.quoteToken}::${tradeSide}::trade`;
 
-            if (shouldAlert(tradeCooldownKey, item.cooldownSeconds || 1800, state)) {
+            if (shouldAlert(tradeCooldownKey, item.tradeCooldownSeconds || 1800, state)) {
               try {
                 const tradeResult = await executeTrade(config.trade, item, tradeSide);
                 if (tradeResult.success) {
@@ -96,7 +96,7 @@ export async function startWatcher(config: Config) {
           }
 
           if (isConditionMet) {
-            if (shouldAlert(item.baseToken, item.cooldownSeconds || 1800, state)) {
+            if (shouldAlert(item.baseToken, item.alertCooldownSeconds || 1800, state)) {
               const title = 'Price Alert';
               const targetPrice = item.targetPrice;
               const reason = item.alertMode === 'price'

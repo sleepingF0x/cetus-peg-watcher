@@ -7,6 +7,8 @@ export interface WatchItem {
   quoteToken?: string;
   pollInterval?: number;
   cooldownSeconds?: number;
+  alertCooldownSeconds?: number;
+  tradeCooldownSeconds?: number;
   avgWindowMinutes?: number;
   avgTargetPercent?: number;
   alertMode?: 'price' | 'avg_percent';
@@ -31,7 +33,8 @@ export interface Config {
 
 const DEFAULT_QUOTE_TOKEN = '0xdba34672e30cb065b1f93e3ab55318768fd6fef66c15942c9f7cb846e2f900e7::usdc::USDC';
 const DEFAULT_POLL_INTERVAL = 30;
-const DEFAULT_COOLDOWN_SECONDS = 1800;
+const DEFAULT_ALERT_COOLDOWN_SECONDS = 1800;
+const DEFAULT_TRADE_COOLDOWN_SECONDS = 1800;
 const DEFAULT_AVG_WINDOW_MINUTES = 10;
 const DEFAULT_TRADE_RPC_URL = 'https://fullnode.mainnet.sui.io:443';
 const DEFAULT_SLIPPAGE_PERCENT = 0.1;
@@ -99,6 +102,15 @@ export function loadConfig(filePath: string): Config {
     if (item.avgTargetPercent !== undefined && (typeof item.avgTargetPercent !== 'number' || item.avgTargetPercent <= 0)) {
       throw new Error(`item[${index}].avgTargetPercent must be a positive number`);
     }
+    if (item.cooldownSeconds !== undefined && (typeof item.cooldownSeconds !== 'number' || item.cooldownSeconds <= 0)) {
+      throw new Error(`item[${index}].cooldownSeconds must be a positive number`);
+    }
+    if (item.alertCooldownSeconds !== undefined && (typeof item.alertCooldownSeconds !== 'number' || item.alertCooldownSeconds <= 0)) {
+      throw new Error(`item[${index}].alertCooldownSeconds must be a positive number`);
+    }
+    if (item.tradeCooldownSeconds !== undefined && (typeof item.tradeCooldownSeconds !== 'number' || item.tradeCooldownSeconds <= 0)) {
+      throw new Error(`item[${index}].tradeCooldownSeconds must be a positive number`);
+    }
 
     const hasTargetPrice = item.targetPrice !== undefined;
     const hasAvgTargetPercent = item.avgTargetPercent !== undefined;
@@ -115,7 +127,8 @@ export function loadConfig(filePath: string): Config {
       ...item,
       quoteToken: item.quoteToken || DEFAULT_QUOTE_TOKEN,
       pollInterval: item.pollInterval || DEFAULT_POLL_INTERVAL,
-      cooldownSeconds: item.cooldownSeconds || DEFAULT_COOLDOWN_SECONDS,
+      alertCooldownSeconds: item.alertCooldownSeconds || item.cooldownSeconds || DEFAULT_ALERT_COOLDOWN_SECONDS,
+      tradeCooldownSeconds: item.tradeCooldownSeconds || item.cooldownSeconds || DEFAULT_TRADE_COOLDOWN_SECONDS,
       alertMode: inferredMode,
       tradeEnabled: item.tradeEnabled !== false,
       avgWindowMinutes: inferredMode === 'avg_percent'

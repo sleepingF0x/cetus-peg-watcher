@@ -76,7 +76,8 @@ npm start
 | `condition` | string | ✅ | - | 触发条件：`above`（高于）或 `below`（低于） |
 | `quoteToken` | string | - | USDC 地址 | 计价货币，默认 USDC |
 | `pollInterval` | number | - | `30` | 轮询间隔（秒） |
-| `cooldownSeconds` | number | - | `1800` | 冷却时间（秒），预警和交易分别计时 |
+| `alertCooldownSeconds` | number | - | `1800` | 预警冷却时间（秒） |
+| `tradeCooldownSeconds` | number | - | `1800` | 交易冷却时间（秒） |
 | `avgWindowMinutes` | number | - | `10` | 均价计算窗口（分钟），仅 avg_percent 模式有效 |
 | `alertMode` | string | - | 自动推断 | 触发模式：`price` 或 `avg_percent`，不填时根据 targetPrice/avgTargetPercent 自动推断 |
 | `tradeEnabled` | boolean | - | `true` | 该币种是否允许自动交易 |
@@ -158,7 +159,8 @@ npm start
       "avgWindowMinutes": 10,
       "avgTargetPercent": 103,
       "pollInterval": 60,
-      "cooldownSeconds": 1800,
+      "alertCooldownSeconds": 1800,
+      "tradeCooldownSeconds": 300,
       "tradeEnabled": false
     }
   ]
@@ -187,7 +189,8 @@ npm start
       "avgWindowMinutes": 10,
       "avgTargetPercent": 103,
       "pollInterval": 60,
-      "cooldownSeconds": 1800,
+      "alertCooldownSeconds": 1800,
+      "tradeCooldownSeconds": 300,
       "tradeEnabled": true
     }
   ]
