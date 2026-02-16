@@ -11,6 +11,11 @@ interface PricePoint {
   price: number;
 }
 
+interface AveragePauseRule {
+  resumePrice: number;
+  condition: 'above' | 'below';
+}
+
 function pruneOldPrices(history: PricePoint[], now: number, windowMs: number): void {
   while (history.length > 0 && now - history[0].timestamp > windowMs) {
     history.shift();
@@ -29,6 +34,7 @@ function calculateAveragePrice(history: PricePoint[]): number | null {
 export async function startWatcher(config: Config) {
   const state = loadState(STATE_FILE);
   const priceHistory = new Map<string, PricePoint[]>();
+  const averagePauseRules = new Map<string, AveragePauseRule>();
 
   for (const item of config.items) {
     const pollIntervalMs = (item.pollInterval || 30) * 1000;
@@ -42,6 +48,19 @@ export async function startWatcher(config: Config) {
         if (price !== null) {
           const now = Date.now();
           const history = priceHistory.get(priceKey) ?? [];
+          const pauseRule = averagePauseRules.get(priceKey);
+
+          if (pauseRule) {
+            const shouldResume = pauseRule.condition === 'above'
+              ? price <= pauseRule.resumePrice
+              : price >= pauseRule.resumePrice;
+
+            if (shouldResume) {
+              averagePauseRules.delete(priceKey);
+            }
+          }
+
+          const isAverageSamplingPaused = averagePauseRules.has(priceKey);
           pruneOldPrices(history, now, averageWindowMs);
           const avgWindowPrice = calculateAveragePrice(history);
 
@@ -107,12 +126,29 @@ export async function startWatcher(config: Config) {
               const success = await sendBarkAlert(config.barkUrl, title, message);
               if (success) {
                 recordAlert(item.baseToken, state);
+
+                if (item.alertMode === 'avg_percent' && avgWindowPrice !== null) {
+                  const deviation = Math.abs((item.avgTargetPercent || 100) - 100) / 100;
+                  const resumeFactor = item.avgResumeFactor ?? 0.95;
+                  const recoverDeviation = deviation * resumeFactor;
+                  const resumeMultiplier = item.condition === 'above'
+                    ? 1 + deviation - recoverDeviation
+                    : 1 - deviation + recoverDeviation;
+
+                  averagePauseRules.set(priceKey, {
+                    condition: item.condition,
+                    resumePrice: avgWindowPrice * resumeMultiplier,
+                  });
+                }
+
                 saveState(STATE_FILE, state);
               }
             }
           }
 
-          history.push({ timestamp: now, price });
+          if (!isAverageSamplingPaused) {
+            history.push({ timestamp: now, price });
+          }
           priceHistory.set(priceKey, history);
         } else {
           console.error(`[Watcher] Failed to fetch price for ${item.baseToken}`);

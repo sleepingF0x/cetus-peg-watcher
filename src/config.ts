@@ -11,6 +11,7 @@ export interface WatchItem {
   tradeCooldownSeconds?: number;
   avgWindowMinutes?: number;
   avgTargetPercent?: number;
+  avgResumeFactor?: number;
   alertMode?: 'price' | 'avg_percent';
   tradeEnabled?: boolean;
 }
@@ -36,6 +37,7 @@ const DEFAULT_POLL_INTERVAL = 30;
 const DEFAULT_ALERT_COOLDOWN_SECONDS = 1800;
 const DEFAULT_TRADE_COOLDOWN_SECONDS = 1800;
 const DEFAULT_AVG_WINDOW_MINUTES = 10;
+const DEFAULT_AVG_RESUME_FACTOR = 0.95;
 const DEFAULT_TRADE_RPC_URL = 'https://fullnode.mainnet.sui.io:443';
 const DEFAULT_SLIPPAGE_PERCENT = 0.1;
 const DEFAULT_SUI_GAS_RESERVE = 0.02;
@@ -102,6 +104,9 @@ export function loadConfig(filePath: string): Config {
     if (item.avgTargetPercent !== undefined && (typeof item.avgTargetPercent !== 'number' || item.avgTargetPercent <= 0)) {
       throw new Error(`item[${index}].avgTargetPercent must be a positive number`);
     }
+    if (item.avgResumeFactor !== undefined && (typeof item.avgResumeFactor !== 'number' || item.avgResumeFactor < 0 || item.avgResumeFactor > 1)) {
+      throw new Error(`item[${index}].avgResumeFactor must be a number between 0 and 1`);
+    }
     if (item.cooldownSeconds !== undefined && (typeof item.cooldownSeconds !== 'number' || item.cooldownSeconds <= 0)) {
       throw new Error(`item[${index}].cooldownSeconds must be a positive number`);
     }
@@ -133,6 +138,9 @@ export function loadConfig(filePath: string): Config {
       tradeEnabled: item.tradeEnabled !== false,
       avgWindowMinutes: inferredMode === 'avg_percent'
         ? (item.avgWindowMinutes || DEFAULT_AVG_WINDOW_MINUTES)
+        : undefined,
+      avgResumeFactor: inferredMode === 'avg_percent'
+        ? (item.avgResumeFactor ?? DEFAULT_AVG_RESUME_FACTOR)
         : undefined,
     };
   });
