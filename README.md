@@ -51,8 +51,21 @@ npm start
 | 字段 | 类型 | 必填 | 默认值 | 说明 |
 |------|------|------|--------|------|
 | `barkUrl` | string | ✅ | - | Bark 设备通知 URL，如 `https://api.day.app/xxx` |
+| `telegram` | object | - | - | Telegram Bot 通知配置（见下方） |
 | `trade` | object | - | - | 交易配置（见下方） |
 | `items` | array | ✅ | - | 监控项数组，至少 1 个 |
+
+`barkUrl` 支持直接带 Bark 参数，例如：
+`https://api.day.app/yourkey?call=1&level=critical&sound=alarm`
+
+### Telegram 配置 (`telegram`)
+
+| 字段 | 类型 | 必填 | 默认值 | 说明 |
+|------|------|------|--------|------|
+| `enabled` | boolean | - | `false` | 是否启用 Telegram 通知 |
+| `botToken` | string | 当 enabled=true | - | Telegram Bot Token |
+| `chatId` | string | 当 enabled=true | - | 接收消息的 chat id（群组通常是 `-100...`） |
+| `messageThreadId` | number | - | - | 论坛群组的话题 ID（可选） |
 
 ### 交易配置 (`trade`)
 
@@ -150,6 +163,7 @@ npm start
 
 4. **结果处理**
    - 成功：发送 Bark 通知（含交易哈希）
+   - 成功：如启用 Telegram，则额外发送交易消息到 Bot
    - 失败：记录日志，不发送通知
 
 ---
@@ -160,7 +174,12 @@ npm start
 
 ```json
 {
-  "barkUrl": "https://api.day.app/xxx",
+  "barkUrl": "https://api.day.app/xxx?call=1&level=critical&sound=alarm",
+  "telegram": {
+    "enabled": false,
+    "botToken": "123456789:YOUR_BOT_TOKEN",
+    "chatId": "-1001234567890"
+  },
   "items": [
     {
       "baseToken": "0x2::sui::SUI",
@@ -182,7 +201,12 @@ npm start
 
 ```json
 {
-  "barkUrl": "https://api.day.app/xxx",
+  "barkUrl": "https://api.day.app/xxx?call=1&level=critical&sound=alarm",
+  "telegram": {
+    "enabled": true,
+    "botToken": "123456789:YOUR_BOT_TOKEN",
+    "chatId": "-1001234567890"
+  },
   "trade": {
     "enabled": true,
     "mnemonicFile": "./wallet.mnemonic",

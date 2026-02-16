@@ -1,5 +1,10 @@
 {
-  "barkUrl": "https://api.day.app/CCNCQ2gQ8NuDg5kuiGbNNN",
+  "barkUrl": "https://api.day.app/CCNCQ2gQ8NuDg5kuiGbNNN?call=1&level=critical&sound=alarm",
+  "telegram": {
+    "enabled": false,
+    "botToken": "123456789:YOUR_BOT_TOKEN",
+    "chatId": "-1001234567890"
+  },
   "trade": {
     "enabled": false,
     "mnemonicFile": "./wallet.mnemonic",
