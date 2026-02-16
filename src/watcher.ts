@@ -3,6 +3,7 @@ import { getTokenPrice } from './cetus.js';
 import { loadState, saveState, shouldAlert, recordAlert } from './state.js';
 import { sendBarkAlert } from './notifier.js';
 import { executeTrade } from './trader.js';
+import { sendTelegramMessage } from './telegram.js';
 
 const STATE_FILE = 'state.json';
 
@@ -104,6 +105,15 @@ export async function startWatcher(config: Config) {
                   const digestPart = tradeResult.digest ? `, tx: ${tradeResult.digest}` : '';
                   const message = `${item.baseToken} @ $${price.toFixed(4)}, amountIn: ${tradeResult.amountIn}${digestPart}`;
                   await sendBarkAlert(config.barkUrl, title, message);
+
+                  const telegramMessage = [
+                    `<b>Trade Executed (${tradeSide.toUpperCase()})</b>`,
+                    `Pair: <code>${item.baseToken}</code> / <code>${item.quoteToken}</code>`,
+                    `Price: <code>${price.toFixed(6)}</code>`,
+                    `Amount In: <code>${tradeResult.amountIn ?? '-'}</code>`,
+                    `Tx: <code>${tradeResult.digest ?? '-'}</code>`,
+                  ].join('\n');
+                  await sendTelegramMessage(config.telegram, telegramMessage);
                 } else if (!tradeResult.skipped) {
                   console.error(`[Trade] Execution failed for ${item.baseToken}: ${tradeResult.reason}`);
                 }

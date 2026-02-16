@@ -2,7 +2,10 @@ import axios from 'axios';
 
 export async function sendBarkAlert(barkUrl: string, title: string, message: string): Promise<boolean> {
   try {
-    const url = `${barkUrl}/${encodeURIComponent(title)}/${encodeURIComponent(message)}?call=1&level=critical`;
+    const trimmed = barkUrl.endsWith('/') ? barkUrl.slice(0, -1) : barkUrl;
+    const [base, query] = trimmed.split('?', 2);
+    const path = `${base}/${encodeURIComponent(title)}/${encodeURIComponent(message)}`;
+    const url = query ? `${path}?${query}` : path;
     const response = await axios.get(url, { timeout: 10000 });
     
     if (response.status === 200) {

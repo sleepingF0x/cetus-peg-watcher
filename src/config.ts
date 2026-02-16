@@ -26,10 +26,18 @@ export interface TradeConfig {
   maxTradePercent?: number;
 }
 
+export interface TelegramConfig {
+  enabled?: boolean;
+  botToken?: string;
+  chatId?: string;
+  messageThreadId?: number;
+}
+
 export interface Config {
   barkUrl: string;
   items: WatchItem[];
   trade?: TradeConfig;
+  telegram?: TelegramConfig;
 }
 
 const DEFAULT_QUOTE_TOKEN = '0xdba34672e30cb065b1f93e3ab55318768fd6fef66c15942c9f7cb846e2f900e7::usdc::USDC';
@@ -60,6 +68,21 @@ export function loadConfig(filePath: string): Config {
   }
 
   const tradeConfig = config.trade || {};
+  const telegramConfig = config.telegram || {};
+
+  if (telegramConfig.enabled !== undefined && typeof telegramConfig.enabled !== 'boolean') {
+    throw new Error('telegram.enabled must be a boolean');
+  }
+  if (telegramConfig.messageThreadId !== undefined && (!Number.isInteger(telegramConfig.messageThreadId) || telegramConfig.messageThreadId <= 0)) {
+    throw new Error('telegram.messageThreadId must be a positive integer');
+  }
+  if (telegramConfig.enabled && (!telegramConfig.botToken || typeof telegramConfig.botToken !== 'string')) {
+    throw new Error('telegram.botToken is required when telegram.enabled is true');
+  }
+  if (telegramConfig.enabled && (!telegramConfig.chatId || typeof telegramConfig.chatId !== 'string')) {
+    throw new Error('telegram.chatId is required when telegram.enabled is true');
+  }
+
   if (tradeConfig.enabled !== undefined && typeof tradeConfig.enabled !== 'boolean') {
     throw new Error('trade.enabled must be a boolean');
   }
@@ -153,6 +176,11 @@ export function loadConfig(filePath: string): Config {
     suiGasReserve: tradeConfig.suiGasReserve ?? DEFAULT_SUI_GAS_RESERVE,
     maxTradePercent: tradeConfig.maxTradePercent || DEFAULT_MAX_TRADE_PERCENT,
     derivationPath: tradeConfig.derivationPath || "m/44'/784'/0'/0'/0'",
+  };
+
+  config.telegram = {
+    ...telegramConfig,
+    enabled: telegramConfig.enabled === true,
   };
 
   return config;
