@@ -79,6 +79,7 @@ npm start
 | `alertCooldownSeconds` | number | - | `1800` | 预警冷却时间（秒） |
 | `tradeCooldownSeconds` | number | - | `1800` | 交易冷却时间（秒） |
 | `avgWindowMinutes` | number | - | `10` | 均价计算窗口（分钟），仅 avg_percent 模式有效 |
+| `avgResumeFactor` | number | - | `0.95` | 告警后恢复均价采样的回归系数（0~1，仅 avg_percent） |
 | `alertMode` | string | - | 自动推断 | 触发模式：`price` 或 `avg_percent`，不填时根据 targetPrice/avgTargetPercent 自动推断 |
 | `tradeEnabled` | boolean | - | `true` | 该币种是否允许自动交易 |
 
@@ -116,6 +117,15 @@ npm start
 
 - 预警冷却：按 `baseToken` 维度记录
 - 交易冷却：按 `baseToken + quoteToken + side` 维度记录（买入和卖出分别冷却）
+
+### 5. 均价采样暂停与恢复（仅 `avg_percent`）
+
+- 触发并成功发送预警后，暂停将新价格写入均价窗口
+- 恢复阈值基于 `avgTargetPercent` 和 `avgResumeFactor` 计算
+- 偏离量：`deviation = abs(avgTargetPercent - 100) / 100`
+- 恢复偏离：`recoverDeviation = deviation * avgResumeFactor`
+- `condition=above` 恢复线：`avgPrice * (1 + deviation - recoverDeviation)`，当 `current <= 恢复线` 恢复采样
+- `condition=below` 恢复线：`avgPrice * (1 - deviation + recoverDeviation)`，当 `current >= 恢复线` 恢复采样
 
 ---
 
@@ -158,6 +168,7 @@ npm start
       "condition": "above",
       "avgWindowMinutes": 10,
       "avgTargetPercent": 103,
+      "avgResumeFactor": 0.95,
       "pollInterval": 60,
       "alertCooldownSeconds": 1800,
       "tradeCooldownSeconds": 300,
@@ -188,6 +199,7 @@ npm start
       "condition": "above",
       "avgWindowMinutes": 10,
       "avgTargetPercent": 103,
+      "avgResumeFactor": 0.95,
       "pollInterval": 60,
       "alertCooldownSeconds": 1800,
       "tradeCooldownSeconds": 300,
