@@ -31,14 +31,14 @@ export function saveState(filePath: string, state: AlertState): void {
   }
 }
 
-export function shouldAlert(tokenId: string, cooldownMinutes: number, state: AlertState): boolean {
+export function shouldAlert(tokenId: string, cooldownSeconds: number, state: AlertState): boolean {
   const lastTime = state.lastAlertTime[tokenId];
   if (!lastTime) {
     return true;
   }
 
   const now = Date.now();
-  const cooldownMs = cooldownMinutes * 60 * 1000;
+  const cooldownMs = cooldownSeconds * 1000;
   return now - lastTime >= cooldownMs;
 }
 
