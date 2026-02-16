@@ -76,8 +76,6 @@ export async function startWatcher(config: Config) {
             ? null
             : avgWindowPrice * ((item.avgTargetPercent || 100) / 100);
 
-          const referencePrice = item.alertMode === 'price' ? item.targetPrice! : averageTargetPrice;
-
           const isAverageConditionMet = item.alertMode === 'avg_percent' && averageTargetPrice !== null && (
             (item.condition === 'above' && price >= averageTargetPrice) ||
             (item.condition === 'below' && price <= averageTargetPrice)
@@ -87,9 +85,9 @@ export async function startWatcher(config: Config) {
             ? isTargetConditionMet
             : isAverageConditionMet;
 
-          const tradeSide = referencePrice === null
-            ? null
-            : (price < referencePrice ? 'buy' : (price > referencePrice ? 'sell' : null));
+          const tradeSide = isConditionMet
+            ? (item.condition === 'below' ? 'buy' : 'sell')
+            : null;
 
           if (config.trade?.enabled && item.tradeEnabled && tradeSide !== null) {
             const tradeCooldownKey = `${item.baseToken}::${item.quoteToken}::${tradeSide}::trade`;
