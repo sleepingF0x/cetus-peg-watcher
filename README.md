@@ -1,119 +1,274 @@
 # Cetus Peg Watcher
 
-A lightweight Node.js/TypeScript tool to monitor token prices on Cetus DEX (Sui blockchain) and receive Bark notifications when price thresholds are breached.
+Sui 区块链代币价格监控与自动交易工具。基于 Cetus DEX Aggregator API 监控价格，当价格突破阈值时发送 Bark iOS 推送通知，并可选地执行自动交易。
 
-## Features
+## 功能特性
 
-- 🔍 **Real-time Price Monitoring**: Polls Cetus Aggregator API for latest prices
-- 🔔 **Bark Notifications**: Get instant alerts on your iOS device via Bark
-- 🌡️ **Smart Cooldown**: Configurable cooldown period to prevent notification spam
-- 💾 **Persistent State**: Alert history survives app restarts
-- 🔄 **Automatic Retry**: Exponential backoff for API failures
-- ⚡ **Lightweight**: No database, minimal dependencies
+- **实时价格监控**：通过 Cetus Aggregator API 轮询代币价格
+- **双模式触发**：
+  - 固定价格模式：`targetPrice` 绝对阈值
+  - 均价百分比模式：`avgWindowMinutes` 内均价 × `avgTargetPercent`%
+- **iOS 推送通知**：Bark 实时推送，支持电话铃声 + 紧急提醒
+- **自动交易**（可选）：满足条件时自动执行买卖（需配置助记词）
+- **智能冷却**：预警和交易分别冷却，防止重复触发
+- **状态持久化**：重启后保留冷却状态
+- **API 重试**：失败时指数退避自动重试
 
-## Quick Start
+## 快速开始
 
-### 1. Install Dependencies
+### 1. 安装依赖
 
 ```bash
 npm install
 ```
 
-### 2. Configure
-
-Copy the example config and edit it:
+### 2. 配置
 
 ```bash
 cp config.example.json config.json
 ```
 
-Edit `config.json` with your settings:
+编辑 `config.json`，参考下方的配置说明。
 
-```json
-{
-  "barkUrl": "https://api.day.app/YOUR_DEVICE_KEY",
-  "items": [
-    {
-      "baseToken": "0x2::sui::SUI",
-      "targetPrice": 3.5,
-      "condition": "above",
-      "pollInterval": 60,
-      "cooldownMinutes": 30
-    }
-  ]
-}
-```
-
-### 3. Run
+### 3. 运行
 
 ```bash
 npm start
 ```
 
-Or use the helper script:
+或使用辅助脚本：
 
 ```bash
 ./start.sh
 ```
 
-## Configuration Options
+---
 
-### Global Settings
+## 配置详解
 
-| Field | Description | Default |
-|-------|-------------|---------|
-| `barkUrl` | Your Bark device URL | Required |
+### 全局配置
 
-### Watch Item Settings
+| 字段 | 类型 | 必填 | 默认值 | 说明 |
+|------|------|------|--------|------|
+| `barkUrl` | string | ✅ | - | Bark 设备通知 URL，如 `https://api.day.app/xxx` |
+| `trade` | object | - | - | 交易配置（见下方） |
+| `items` | array | ✅ | - | 监控项数组，至少 1 个 |
 
-| Field | Description | Default |
-|-------|-------------|---------|
-| `baseToken` | Token to monitor (Sui coin type) | Required |
-| `targetPrice` | Price threshold to trigger alert | Required |
-| `condition` | `above` or `below` target price | Required |
-| `quoteToken` | Token to price against | USDC |
-| `pollInterval` | Seconds between price checks | 30 |
-| `cooldownMinutes` | Minutes before re-alerting | 30 |
+### 交易配置 (`trade`)
 
-### Common Token Addresses
+| 字段 | 类型 | 必填 | 默认值 | 说明 |
+|------|------|------|--------|------|
+| `enabled` | boolean | - | `false` | 是否启用自动交易功能 |
+| `mnemonicFile` | string | 当 enabled=true | - | 助记词文件路径（权限必须为 600） |
+| `derivationPath` | string | - | `m/44'/784'/0'/0'/0'` | BIP44 派生路径 |
+| `rpcUrl` | string | - | `https://fullnode.mainnet.sui.io:443` | Sui RPC 节点地址 |
+| `slippagePercent` | number | - | `0.1` | 滑点容忍（百分比），如 0.1 表示 0.1% |
+| `suiGasReserve` | number | - | `0.02` | 交易 SUI 时预留的 gas 数量 |
+| `maxTradePercent` | number | - | `100` | 每次交易使用可用余额的比例（%），如 30 表示只用 30% |
 
-| Token | Address |
-|-------|---------|
+### 监控项配置 (`items[]`)
+
+| 字段 | 类型 | 必填 | 默认值 | 说明 |
+|------|------|------|--------|------|
+| `baseToken` | string | ✅ | - | 要监控的代币地址，如 `0x2::sui::SUI` |
+| `targetPrice` | number | ⚠️ | - | 固定价格模式的目标价格（与 avgTargetPercent 二选一） |
+| `avgTargetPercent` | number | ⚠️ | - | 均价百分比模式，如 103 表示均价的 103%（与 targetPrice 二选一） |
+| `condition` | string | ✅ | - | 触发条件：`above`（高于）或 `below`（低于） |
+| `quoteToken` | string | - | USDC 地址 | 计价货币，默认 USDC |
+| `pollInterval` | number | - | `30` | 轮询间隔（秒） |
+| `cooldownSeconds` | number | - | `1800` | 冷却时间（秒），预警和交易分别计时 |
+| `avgWindowMinutes` | number | - | `10` | 均价计算窗口（分钟），仅 avg_percent 模式有效 |
+| `alertMode` | string | - | 自动推断 | 触发模式：`price` 或 `avg_percent`，不填时根据 targetPrice/avgTargetPercent 自动推断 |
+| `tradeEnabled` | boolean | - | `true` | 该币种是否允许自动交易 |
+
+**⚠️ 重要规则**：`targetPrice` 和 `avgTargetPercent` 必须**且只能配置一个**，否则启动时报错。
+
+---
+
+## 触发逻辑
+
+### 1. 价格获取
+
+- 调用 Cetus Aggregator API 查询当前价格
+- 输入 1 单位 baseToken，获取 quoteToken 报价
+- 价格 = `amountOut / amountIn * 10^(baseDecimals - quoteDecimals)`
+
+### 2. 触发条件判断
+
+| alertMode | 参考价计算 | 触发条件 |
+|-----------|------------|----------|
+| `price` | `targetPrice` | `price >= targetPrice` (above) 或 `price <= targetPrice` (below) |
+| `avg_percent` | `avgWindowPrice * (avgTargetPercent / 100)` | 同上逻辑，用均价百分比作为阈值 |
+
+### 3. 交易方向判断
+
+当 `trade.enabled = true` 且该币种 `tradeEnabled = true` 时：
+
+```
+当前价格 < 参考价 → 买入 (buy)
+当前价格 > 参考价 → 卖出 (sell)
+```
+
+**注意**：交易方向只看价格比较结果，不再看 `condition` 字段。
+
+### 4. 冷却机制
+
+- 预警冷却：按 `baseToken` 维度记录
+- 交易冷却：按 `baseToken + quoteToken + side` 维度记录（买入和卖出分别冷却）
+
+---
+
+## 交易执行流程
+
+当触发交易条件时：
+
+1. **计算可交易金额**
+   - 查询钱包该币种可用余额
+   - 若输入币为 SUI，预留 `suiGasReserve` 作为 gas
+   - 乘以 `maxTradePercent` 得到最终下单金额
+
+2. **查询最优路由**
+   - 使用 Cetus Aggregator SDK 的 `findRouters()`
+   - 自动聚合多个 DEX（Cetus、FlowX、Turbos 等）
+   - 返回最优兑换路径
+
+3. **构建并执行交易**
+   - `fastRouterSwap()` 自动合并多路径
+   - 应用滑点控制（`slippagePercent`）
+   - 使用助记词签名并广播到链上
+
+4. **结果处理**
+   - 成功：发送 Bark 通知（含交易哈希）
+   - 失败：记录日志，不发送通知
+
+---
+
+## 配置示例
+
+### 示例 1：仅预警（不交易）
+
+```json
+{
+  "barkUrl": "https://api.day.app/xxx",
+  "items": [
+    {
+      "baseToken": "0x2::sui::SUI",
+      "alertMode": "avg_percent",
+      "condition": "above",
+      "avgWindowMinutes": 10,
+      "avgTargetPercent": 103,
+      "pollInterval": 60,
+      "cooldownMinutes": 30,
+      "tradeEnabled": false
+    }
+  ]
+}
+```
+
+### 示例 2：自动交易
+
+```json
+{
+  "barkUrl": "https://api.day.app/xxx",
+  "trade": {
+    "enabled": true,
+    "mnemonicFile": "./wallet.mnemonic",
+    "derivationPath": "m/44'/784'/0'/0'/0'",
+    "rpcUrl": "https://fullnode.mainnet.sui.io:443",
+    "slippagePercent": 0.1,
+    "suiGasReserve": 0.02,
+    "maxTradePercent": 30
+  },
+  "items": [
+    {
+      "baseToken": "0x2::sui::SUI",
+      "alertMode": "avg_percent",
+      "condition": "above",
+      "avgWindowMinutes": 10,
+      "avgTargetPercent": 103,
+      "pollInterval": 60,
+      "cooldownMinutes": 30,
+      "tradeEnabled": true
+    }
+  ]
+}
+```
+
+---
+
+## 常用代币地址
+
+| 代币 | 地址 |
+|------|------|
 | SUI | `0x2::sui::SUI` |
-| Native USDC | `0xdba34672e30cb065b1f93e3ab55318768fd6fef66c159427221d6b5457b46522::usdc::USDC` |
+| Native USDC | `0xdba34672e30cb065b1f93e3ab55318768fd6fef66c15942c9f7cb846e2f900e7::usdc::USDC` |
 | CETUS | `0x6864a6f921804860930db6ddbe2e16acdf8504495ea7481637a1c8b9a8fe54b::cetus::CETUS` |
 
-## How It Works
+---
 
-1. **Polling**: The app periodically checks token prices via Cetus Aggregator API
-2. **Threshold Check**: Compares current price against your configured target
-3. **Cooldown**: Only sends one alert per cooldown period (default 30 min)
-4. **Persistence**: Saves alert timestamps to `state.json` to survive restarts
-5. **Notification**: Sends Bark push notification when threshold is breached
+## 安全说明
 
-## Example Alert
+### 助记词安全
 
-When SUI price goes above $3.50:
+- **文件权限**：助记词文件必须设为 `600`，否则程序拒绝启动
+- **存放位置**：建议放在项目目录外，避免误提交到版本控制
+- **专用钱包**：使用专用小资金钱包，不要使用主资产钱包
+- **运行环境**：服务器应开启磁盘加密、限制 SSH 登录、启用审计日志
 
-```
-Title: Price Alert
-Message: 0x2::sui::SUI price is $3.55 (target: above $3.50)
-```
+### 交易风险
 
-## Development
+- **滑点损失**：极端行情下成交价可能低于预期（默认 0.1% 滑点）
+- **Gas 消耗**：Sui 交易需要 Gas，建议保留足够余额
+- **建议先测试**：首次启用交易前，建议先用 `maxTradePercent: 10` 小额测试
+- **监控交易**：开启交易后持续关注钱包变化，发现异常立即停止
 
-### Build
+---
+
+## 开发相关
+
+### 编译
 
 ```bash
-npx tsc
+npm run build
 ```
 
-### Run in Development Mode
+### 开发模式运行
 
 ```bash
 npx ts-node --esm src/index.ts
 ```
 
-## License
+### Docker 部署
+
+```bash
+docker-compose up --build
+```
+
+**注意**：Docker 部署时需确保 `config.json` 已存在且权限正确。
+
+---
+
+## 目录结构
+
+```
+.
+├── src/
+│   ├── index.ts      # 入口，信号处理
+│   ├── config.ts     # 配置加载与校验
+│   ├── watcher.ts    # 轮询监控逻辑
+│   ├── cetus.ts      # 价格查询 API
+│   ├── trader.ts     # 交易执行模块
+│   ├── notifier.ts   # Bark 推送
+│   └── state.ts      # 冷却状态管理
+├── config.example.json   # 配置示例
+├── config.json          # 运行时配置（不提交）
+├── state.json           # 状态文件（自动生成）
+├── Dockerfile
+└── docker-compose.yml
+```
+
+---
+
+## 许可证
 
 MIT

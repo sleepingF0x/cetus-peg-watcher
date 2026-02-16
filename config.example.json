@@ -1,15 +1,27 @@
 {
   "barkUrl": "https://api.day.app/CCNCQ2gQ8NuDg5kuiGbNNN",
+  "trade": {
+    "enabled": false,
+    "mnemonicFile": "./wallet.mnemonic",
+    "derivationPath": "m/44'/784'/0'/0'/0'",
+    "rpcUrl": "https://fullnode.mainnet.sui.io:443",
+    "slippagePercent": 0.1,
+    "suiGasReserve": 0.02,
+    "maxTradePercent": 30
+  },
   "items": [
     {
       "baseToken": "0x2::sui::SUI",
-      "targetPrice": 3.5,
+      "alertMode": "avg_percent",
       "condition": "above",
       "pollInterval": 60,
-      "cooldownMinutes": 30
+      "cooldownSeconds": 1800,
+      "avgWindowMinutes": 10,
+      "avgTargetPercent": 103
     },
     {
       "baseToken": "0x6864a6f921804860930db6ddbe2e16acdf8504495ea7481637a1c8b9a8fe54b::cetus::CETUS",
+      "alertMode": "price",
       "targetPrice": 0.3,
       "condition": "below"
     }
