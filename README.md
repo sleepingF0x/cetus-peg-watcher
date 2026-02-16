@@ -158,7 +158,7 @@ npm start
       "avgWindowMinutes": 10,
       "avgTargetPercent": 103,
       "pollInterval": 60,
-      "cooldownMinutes": 30,
+      "cooldownSeconds": 1800,
       "tradeEnabled": false
     }
   ]
@@ -187,7 +187,7 @@ npm start
       "avgWindowMinutes": 10,
       "avgTargetPercent": 103,
       "pollInterval": 60,
-      "cooldownMinutes": 30,
+      "cooldownSeconds": 1800,
       "tradeEnabled": true
     }
   ]
