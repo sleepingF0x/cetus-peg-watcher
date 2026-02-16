@@ -4,3 +4,4 @@ services:
     restart: unless-stopped
     volumes:
       - ./config.json:/app/config.json:ro
+      - ./wallet.mnemonic:/app/wallet.mnemonic:ro

@@ -283,7 +283,7 @@ npx ts-node --esm src/index.ts
 docker-compose up --build
 ```
 
-**注意**：Docker 部署时需确保 `config.json` 已存在且权限正确。
+**注意**：Docker 部署时需确保 `config.json` 已存在；若启用交易，还需准备 `wallet.mnemonic` 并设置权限为 `600`。
 
 ---
 
