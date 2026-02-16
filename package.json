@@ -12,6 +12,9 @@
   "author": "",
   "license": "ISC",
   "type": "module",
+  "engines": {
+    "node": ">=22.14.0"
+  },
   "dependencies": {
     "@cetusprotocol/aggregator-sdk": "^1.4.5",
     "@mysten/sui": "^1.0.5",
