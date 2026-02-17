@@ -65,7 +65,12 @@ export async function startWatcher(config: Config) {
           pruneOldPrices(history, now, averageWindowMs);
           const avgWindowPrice = calculateAveragePrice(history);
 
-          console.log(`Monitoring ${item.baseToken}: Current price $${price.toFixed(4)}`);
+          const avgWindowText = avgWindowPrice === null
+            ? 'N/A'
+            : `$${avgWindowPrice.toFixed(6)}`;
+          console.log(
+            `[Monitor] ${item.baseToken} | quote: ${item.quoteToken} | current: $${price.toFixed(6)} | avg(${item.avgWindowMinutes || 10}m): ${avgWindowText} | samples: ${history.length}`,
+          );
 
           const isTargetConditionMet = item.alertMode === 'price' && (
             (item.condition === 'above' && price >= item.targetPrice!) ||
@@ -85,6 +90,15 @@ export async function startWatcher(config: Config) {
             ? isTargetConditionMet
             : isAverageConditionMet;
 
+          if (isConditionMet) {
+            const triggerThreshold = item.alertMode === 'price'
+              ? item.targetPrice!
+              : averageTargetPrice!;
+            console.log(
+              `[Trigger] ${item.baseToken} hit condition=${item.condition} mode=${item.alertMode} | current=$${price.toFixed(6)} | threshold=$${triggerThreshold.toFixed(6)}`,
+            );
+          }
+
           const tradeSide = isConditionMet
             ? (item.condition === 'below' ? 'buy' : 'sell')
             : null;
@@ -93,9 +107,15 @@ export async function startWatcher(config: Config) {
             const tradeCooldownKey = `${item.baseToken}::${item.quoteToken}::${tradeSide}::trade`;
 
             if (shouldAlert(tradeCooldownKey, item.tradeCooldownSeconds || 1800, state)) {
+              console.log(
+                `[Trade] Triggered ${tradeSide.toUpperCase()} for ${item.baseToken} at $${price.toFixed(6)} (cooldown=${item.tradeCooldownSeconds || 1800}s)`,
+              );
               try {
                 const tradeResult = await executeTrade(config.trade, item, tradeSide);
                 if (tradeResult.success) {
+                  console.log(
+                    `[Trade] Success ${tradeSide.toUpperCase()} for ${item.baseToken}, amountIn=${tradeResult.amountIn ?? '-'}, digest=${tradeResult.digest ?? '-'}`,
+                  );
                   recordAlert(tradeCooldownKey, state);
                   saveState(STATE_FILE, state);
 
@@ -111,7 +131,16 @@ export async function startWatcher(config: Config) {
                     `Amount In: <code>${tradeResult.amountIn ?? '-'}</code>`,
                     `Tx: <code>${tradeResult.digest ?? '-'}</code>`,
                   ].join('\n');
-                  await sendTelegramMessage(config.telegram, telegramMessage);
+                  const telegramSent = await sendTelegramMessage(config.telegram, telegramMessage);
+                  if (config.telegram?.enabled) {
+                    if (telegramSent) {
+                      console.log(`[Telegram] Trade message sent for ${item.baseToken}`);
+                    } else {
+                      console.error(`[Telegram] Trade message failed for ${item.baseToken}`);
+                    }
+                  }
+                } else if (tradeResult.skipped) {
+                  console.warn(`[Trade] Skipped ${tradeSide.toUpperCase()} for ${item.baseToken}: ${tradeResult.reason}`);
                 } else if (!tradeResult.skipped) {
                   console.error(`[Trade] Execution failed for ${item.baseToken}: ${tradeResult.reason}`);
                 }
@@ -119,11 +148,18 @@ export async function startWatcher(config: Config) {
                 const err = error as Error;
                 console.error(`[Trade] Error executing ${tradeSide} for ${item.baseToken}: ${err.message}`);
               }
+            } else {
+              console.log(
+                `[Trade] Cooldown active for ${item.baseToken} (${tradeSide}), skip for ${item.tradeCooldownSeconds || 1800}s window`,
+              );
             }
           }
 
           if (isConditionMet) {
             if (shouldAlert(item.baseToken, item.alertCooldownSeconds || 1800, state)) {
+              console.log(
+                `[Alert] Triggered for ${item.baseToken} at $${price.toFixed(6)} (cooldown=${item.alertCooldownSeconds || 1800}s)`,
+              );
               const title = 'Price Alert';
               const targetPrice = item.targetPrice;
               const reason = item.alertMode === 'price'
@@ -133,6 +169,7 @@ export async function startWatcher(config: Config) {
               
               const success = await sendBarkAlert(config.barkUrl, title, message);
               if (success) {
+                console.log(`[Alert] Bark notification sent for ${item.baseToken}`);
                 recordAlert(item.baseToken, state);
 
                 if (item.alertMode === 'avg_percent' && avgWindowPrice !== null) {
@@ -150,7 +187,13 @@ export async function startWatcher(config: Config) {
                 }
 
                 saveState(STATE_FILE, state);
+              } else {
+                console.error(`[Alert] Bark notification failed for ${item.baseToken}`);
               }
+            } else {
+              console.log(
+                `[Alert] Cooldown active for ${item.baseToken}, skip for ${item.alertCooldownSeconds || 1800}s window`,
+              );
             }
           }
 
