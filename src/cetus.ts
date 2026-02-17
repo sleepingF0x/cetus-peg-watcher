@@ -12,6 +12,8 @@ export interface CetusQuoteResponse {
 
 const CETUS_API_URL = 'https://api-sui.cetus.zone/router_v3/find_routes';
 const SDK_VERSION = 1010404;
+const PRICE_CACHE_TTL_MS = 1000;
+const DEFAULT_QUERY_AMOUNT_KEY = 'AUTO_1_BASE_TOKEN';
 
 async function delay(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -20,6 +22,8 @@ async function delay(ms: number) {
 const SUI_RPC_URL = 'https://fullnode.mainnet.sui.io:443';
 
 const decimalsCache = new Map<string, number>();
+const priceCache = new Map<string, { value: number | null; expiresAt: number }>();
+const inFlightPriceRequests = new Map<string, Promise<number | null>>();
 
 async function getDecimals(coinType: string): Promise<number | null> {
   const cached = decimalsCache.get(coinType);
@@ -50,6 +54,20 @@ export async function getTokenPrice(
   quoteToken: string,
   amount?: string
 ): Promise<number | null> {
+  const normalizedAmountKey = amount && amount.length > 0 ? amount : DEFAULT_QUERY_AMOUNT_KEY;
+  const cacheKey = `${baseToken}::${quoteToken}::${normalizedAmountKey}`;
+  const now = Date.now();
+  const cachedPrice = priceCache.get(cacheKey);
+  if (cachedPrice && cachedPrice.expiresAt > now) {
+    return cachedPrice.value;
+  }
+
+  const inFlight = inFlightPriceRequests.get(cacheKey);
+  if (inFlight) {
+    return inFlight;
+  }
+
+  const requestPromise = (async (): Promise<number | null> => {
   const retries = 3;
   const backoffDelays = [1000, 2000, 4000];
 
@@ -83,10 +101,15 @@ export async function getTokenPrice(
       if (response.data.code === 200 && response.data.data && response.data.data.paths && response.data.data.paths.length > 0) {
         const amountOut = BigInt(response.data.data.amount_out);
         const amountIn = BigInt(queryAmount);
-        
+
         const rawPrice = Number(amountOut) / Number(amountIn);
         const decimalAdjustment = Math.pow(10, baseDecimals - quoteDecimals);
-        return rawPrice * decimalAdjustment;
+        const computedPrice = rawPrice * decimalAdjustment;
+        priceCache.set(cacheKey, {
+          value: computedPrice,
+          expiresAt: Date.now() + PRICE_CACHE_TTL_MS,
+        });
+        return computedPrice;
       } else {
         console.error(`Cetus API error: ${response.data.msg || 'Unknown error'}`);
         if (i === retries) return null;
@@ -101,4 +124,20 @@ export async function getTokenPrice(
   }
 
   return null;
+  })();
+
+  inFlightPriceRequests.set(cacheKey, requestPromise);
+
+  try {
+    const result = await requestPromise;
+    if (result === null) {
+      priceCache.set(cacheKey, {
+        value: null,
+        expiresAt: Date.now() + PRICE_CACHE_TTL_MS,
+      });
+    }
+    return result;
+  } finally {
+    inFlightPriceRequests.delete(cacheKey);
+  }
 }
