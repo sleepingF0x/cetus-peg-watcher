@@ -91,6 +91,7 @@ npm start
 | `pollInterval` | number | - | `30` | 轮询间隔（秒） |
 | `alertCooldownSeconds` | number | - | `1800` | 预警冷却时间（秒） |
 | `tradeCooldownSeconds` | number | - | `1800` | 交易冷却时间（秒） |
+| `minTradeEdgeBps` | number | - | `0` | 交易最小边际（bps），触发后会用最新报价复核，低于该值则跳过交易 |
 | `avgWindowMinutes` | number | - | `10` | 均价计算窗口（分钟），仅 avg_percent 模式有效 |
 | `avgResumeFactor` | number | - | `0.95` | 告警后恢复均价采样的回归系数（0~1，仅 avg_percent） |
 | `alertMode` | string | - | 自动推断 | 触发模式：`price` 或 `avg_percent`，不填时根据 targetPrice/avgTargetPercent 自动推断 |
@@ -125,6 +126,15 @@ npm start
 ```
 
 **注意**：交易方向只看价格比较结果，不再看 `condition` 字段。
+
+### 3.5 交易前复核（避免无效成交）
+
+- 触发交易后，会立刻再次请求最新报价（re-quote）
+- 若 re-quote 已不满足阈值条件，则跳过本次交易
+- 计算边际：
+  - `condition=above`: `(requote - threshold) / threshold * 10000`
+  - `condition=below`: `(threshold - requote) / threshold * 10000`
+- 若边际 `< minTradeEdgeBps`，则跳过本次交易
 
 ### 4. 冷却机制
 
@@ -163,6 +173,7 @@ npm start
 
 4. **结果处理**
    - 成功：发送 Bark 通知（含交易哈希）
+   - 成功：基于交易哈希回查链上 balanceChanges，提取 `amountIn/amountOut` 并计算 `realized` 成交价
    - 成功：如启用 Telegram，则额外发送交易消息到 Bot
    - 失败：记录日志，不发送通知
 
@@ -191,6 +202,7 @@ npm start
       "pollInterval": 60,
       "alertCooldownSeconds": 1800,
       "tradeCooldownSeconds": 300,
+      "minTradeEdgeBps": 20,
       "tradeEnabled": false
     }
   ]
@@ -227,6 +239,7 @@ npm start
       "pollInterval": 60,
       "alertCooldownSeconds": 1800,
       "tradeCooldownSeconds": 300,
+      "minTradeEdgeBps": 20,
       "tradeEnabled": true
     }
   ]
