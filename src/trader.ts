@@ -248,18 +248,6 @@ function calculateAmountByPercent(baseAmount: bigint, tradeConfig: TradeConfig):
   return (baseAmount * BigInt(maxTradePercentScaled)) / BigInt(TRADE_PERCENT_DENOMINATOR);
 }
 
-function parseAmountOrZero(amount: string | undefined): bigint {
-  if (!amount) {
-    return 0n;
-  }
-
-  try {
-    return BigInt(amount);
-  } catch {
-    return 0n;
-  }
-}
-
 export async function getCurrentTradableAmount(
   tradeConfig: TradeConfig,
   item: WatchItem,
@@ -333,7 +321,7 @@ export async function executeTrade(
   const currentTradableAmount = calculateTradableAmount(totalBalance, inputCoin, tradeConfig);
 
   const cycleBaseAmount = options?.lockedCycleAvailableAmount
-    ? parseAmountOrZero(options.lockedCycleAvailableAmount)
+    ? parseSignedAmount(options.lockedCycleAvailableAmount)
     : currentTradableAmount;
 
   let tradableAmount = calculateAmountByPercent(cycleBaseAmount, tradeConfig);
