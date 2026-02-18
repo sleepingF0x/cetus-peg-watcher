@@ -27,8 +27,25 @@ export async function sendTelegramMessage(config: TelegramConfig | undefined, te
 
     const response = await axios.post(url, payload, { timeout: 10000 });
     return response.status === 200 && response.data?.ok === true;
-  } catch (error: any) {
-    console.error(`[Telegram] Error sending message: ${error.message}`);
+  } catch (error: unknown) {
+    if (axios.isAxiosError(error)) {
+      const status = error.response?.status;
+      const responseData = error.response?.data;
+      const detail = responseData === undefined
+        ? error.message
+        : typeof responseData === 'string'
+          ? responseData
+          : JSON.stringify(responseData);
+
+      if (status) {
+        console.error(`[Telegram] Error sending message (status=${status}): ${detail}`);
+      } else {
+        console.error(`[Telegram] Error sending message: ${detail}`);
+      }
+    } else {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(`[Telegram] Error sending message: ${message}`);
+    }
     return false;
   }
 }
