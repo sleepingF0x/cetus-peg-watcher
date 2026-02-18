@@ -91,7 +91,6 @@ npm start
 | `pollInterval` | number | - | `30` | 轮询间隔（秒） |
 | `alertCooldownSeconds` | number | - | `1800` | 预警冷却时间（秒） |
 | `tradeCooldownSeconds` | number | - | `1800` | 交易冷却时间（秒） |
-| `minTradeEdgeBps` | number | - | `0` | 交易最小边际（bps），触发后会用最新报价复核，低于该值则跳过交易 |
 | `avgWindowMinutes` | number | - | `10` | 均价计算窗口（分钟），仅 avg_percent 模式有效 |
 | `avgResumeFactor` | number | - | `0.95` | 告警后恢复均价采样的回归系数（0~1，仅 avg_percent） |
 | `alertMode` | string | - | 自动推断 | 触发模式：`price` 或 `avg_percent`，不填时根据 targetPrice/avgTargetPercent 自动推断 |
@@ -131,10 +130,6 @@ npm start
 
 - 触发交易后，会立刻再次请求最新报价（re-quote）
 - 若 re-quote 已不满足阈值条件，则跳过本次交易
-- 计算边际：
-  - `condition=above`: `(requote - threshold) / threshold * 10000`
-  - `condition=below`: `(threshold - requote) / threshold * 10000`
-- 若边际 `< minTradeEdgeBps`，则跳过本次交易
 
 ### 4. 冷却机制
 
@@ -202,7 +197,6 @@ npm start
       "pollInterval": 60,
       "alertCooldownSeconds": 1800,
       "tradeCooldownSeconds": 300,
-      "minTradeEdgeBps": 20,
       "tradeEnabled": false
     }
   ]
@@ -239,7 +233,6 @@ npm start
       "pollInterval": 60,
       "alertCooldownSeconds": 1800,
       "tradeCooldownSeconds": 300,
-      "minTradeEdgeBps": 20,
       "tradeEnabled": true
     }
   ]

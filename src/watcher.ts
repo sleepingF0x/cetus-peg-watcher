@@ -239,12 +239,6 @@ export async function startWatcher(config: Config) {
                 }
 
                 const edgeBps = calculateEdgeBps(item.condition, requotedPrice, triggerThreshold);
-                if (edgeBps < (item.minTradeEdgeBps || 0)) {
-                  console.log(
-                    `[Trade] Skip ${tradeSide.toUpperCase()} for ${item.baseToken}: edge ${edgeBps.toFixed(2)}bps < minTradeEdgeBps ${(item.minTradeEdgeBps || 0).toFixed(2)}bps`,
-                  );
-                  continue;
-                }
 
                 try {
                   const tradeResult = await executeTrade(config.trade, item, tradeSide);
