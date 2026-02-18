@@ -2,7 +2,7 @@ import { Config } from './config.js';
 import { getTokenPrice } from './cetus.js';
 import { loadState, saveState, shouldAlert, recordAlert } from './state.js';
 import { sendBarkAlert } from './notifier.js';
-import { executeTrade } from './trader.js';
+import { executeTrade, getCurrentTradableAmount } from './trader.js';
 import { sendTelegramMessage } from './telegram.js';
 
 const STATE_FILE = 'state.json';
@@ -99,6 +99,7 @@ export async function startWatcher(config: Config) {
   const state = loadState(STATE_FILE);
   const priceHistory = new Map<string, PricePoint[]>();
   const averagePauseRules = new Map<string, AveragePauseRule>();
+  const tradeCycleBaseAvailable = new Map<string, string>();
   const watchGroups = new Map<string, WatchGroup>();
 
   config.items.forEach((item, index) => {
@@ -219,6 +220,17 @@ export async function startWatcher(config: Config) {
 
               const tradeCooldownKey = `${item.baseToken}::${item.quoteToken}::${tradeSide}::trade`;
 
+              let lockedCycleAvailableAmount = tradeCycleBaseAvailable.get(tradeCooldownKey);
+              if (!lockedCycleAvailableAmount) {
+                const currentTradableAmount = await getCurrentTradableAmount(config.trade, item, tradeSide);
+                if (currentTradableAmount <= 0n) {
+                  console.warn(`[Trade] Skip ${tradeSide.toUpperCase()} for ${item.baseToken}: insufficient tradable balance`);
+                  continue;
+                }
+                lockedCycleAvailableAmount = currentTradableAmount.toString();
+                tradeCycleBaseAvailable.set(tradeCooldownKey, lockedCycleAvailableAmount);
+              }
+
               if (shouldAlert(tradeCooldownKey, item.tradeCooldownSeconds || 1800, state)) {
                 console.log(
                   `[Trade] Triggered ${tradeSide.toUpperCase()} for ${item.baseToken} at $${price.toFixed(6)} (cooldown=${item.tradeCooldownSeconds || 1800}s)`,
@@ -241,7 +253,9 @@ export async function startWatcher(config: Config) {
                 const edgeBps = calculateEdgeBps(item.condition, requotedPrice, triggerThreshold);
 
                 try {
-                  const tradeResult = await executeTrade(config.trade, item, tradeSide);
+                  const tradeResult = await executeTrade(config.trade, item, tradeSide, {
+                    lockedCycleAvailableAmount,
+                  });
                   if (tradeResult.success) {
                     const realizedPriceText = tradeResult.realizedPrice === undefined
                       ? '-'
@@ -294,6 +308,11 @@ export async function startWatcher(config: Config) {
                   `[Trade] Cooldown active for ${item.baseToken} (${tradeSide}), skip for ${item.tradeCooldownSeconds || 1800}s window`,
                 );
               }
+            }
+
+            if (!isConditionMet) {
+              tradeCycleBaseAvailable.delete(`${item.baseToken}::${item.quoteToken}::buy::trade`);
+              tradeCycleBaseAvailable.delete(`${item.baseToken}::${item.quoteToken}::sell::trade`);
             }
 
             if (isConditionMet) {

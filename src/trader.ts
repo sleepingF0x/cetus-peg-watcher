@@ -26,6 +26,10 @@ export interface TradeExecutionResult {
   digest?: string;
 }
 
+interface ExecuteTradeOptions {
+  lockedCycleAvailableAmount?: string;
+}
+
 interface TraderContext {
   keypair: Ed25519Keypair;
   walletAddress: string;
@@ -228,6 +232,49 @@ function isSuiCoinType(coinType: string): boolean {
   return coinType.toLowerCase().endsWith('::sui::sui');
 }
 
+function calculateTradableAmount(totalBalance: bigint, inputCoin: string, tradeConfig: TradeConfig): bigint {
+  let tradableAmount = totalBalance;
+
+  if (isSuiCoinType(inputCoin)) {
+    const reserveMist = BigInt(Math.floor((tradeConfig.suiGasReserve || 0) * Number(SUI_MIST_PER_SUI)));
+    tradableAmount = tradableAmount > reserveMist ? tradableAmount - reserveMist : 0n;
+  }
+
+  return tradableAmount;
+}
+
+function calculateAmountByPercent(baseAmount: bigint, tradeConfig: TradeConfig): bigint {
+  const maxTradePercentScaled = Math.floor((tradeConfig.maxTradePercent || 100) * TRADE_PERCENT_SCALE);
+  return (baseAmount * BigInt(maxTradePercentScaled)) / BigInt(TRADE_PERCENT_DENOMINATOR);
+}
+
+function parseAmountOrZero(amount: string | undefined): bigint {
+  if (!amount) {
+    return 0n;
+  }
+
+  try {
+    return BigInt(amount);
+  } catch {
+    return 0n;
+  }
+}
+
+export async function getCurrentTradableAmount(
+  tradeConfig: TradeConfig,
+  item: WatchItem,
+  side: TradeSide,
+): Promise<bigint> {
+  const inputCoin = side === 'buy' ? item.quoteToken! : item.baseToken;
+  const context = getTraderContext(tradeConfig);
+  const balanceResponse = await context.suiClient.getBalance({
+    owner: context.walletAddress,
+    coinType: inputCoin,
+  });
+  const totalBalance = extractBalance(balanceResponse);
+  return calculateTradableAmount(totalBalance, inputCoin, tradeConfig);
+}
+
 function getTraderContext(tradeConfig: TradeConfig): TraderContext {
   const mnemonicFile = tradeConfig.mnemonicFile!;
   const derivationPath = tradeConfig.derivationPath || "m/44'/784'/0'/0'/0'";
@@ -261,6 +308,7 @@ export async function executeTrade(
   tradeConfig: TradeConfig,
   item: WatchItem,
   side: TradeSide,
+  options?: ExecuteTradeOptions,
 ): Promise<TradeExecutionResult> {
   const inputCoin = side === 'buy' ? item.quoteToken! : item.baseToken;
   const outputCoin = side === 'buy' ? item.baseToken : item.quoteToken!;
@@ -282,15 +330,25 @@ export async function executeTrade(
     coinType: inputCoin,
   });
   const totalBalance = extractBalance(balanceResponse);
+  const currentTradableAmount = calculateTradableAmount(totalBalance, inputCoin, tradeConfig);
 
-  let tradableAmount = totalBalance;
-  if (isSuiCoinType(inputCoin)) {
-    const reserveMist = BigInt(Math.floor((tradeConfig.suiGasReserve || 0) * Number(SUI_MIST_PER_SUI)));
-    tradableAmount = tradableAmount > reserveMist ? tradableAmount - reserveMist : 0n;
+  const cycleBaseAmount = options?.lockedCycleAvailableAmount
+    ? parseAmountOrZero(options.lockedCycleAvailableAmount)
+    : currentTradableAmount;
+
+  let tradableAmount = calculateAmountByPercent(cycleBaseAmount, tradeConfig);
+
+  if (options?.lockedCycleAvailableAmount && tradableAmount > currentTradableAmount) {
+    return {
+      success: false,
+      skipped: true,
+      reason: 'insufficient tradable balance for locked cycle amount',
+      side,
+      inputCoin,
+      outputCoin,
+      amountIn: tradableAmount.toString(),
+    };
   }
-
-  const maxTradePercentScaled = Math.floor((tradeConfig.maxTradePercent || 100) * TRADE_PERCENT_SCALE);
-  tradableAmount = (tradableAmount * BigInt(maxTradePercentScaled)) / BigInt(TRADE_PERCENT_DENOMINATOR);
 
   if (tradableAmount <= 0n) {
     return {

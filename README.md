@@ -130,6 +130,8 @@ npm start
 
 - 触发交易后，会立刻再次请求最新报价（re-quote）
 - 若 re-quote 已不满足阈值条件，则跳过本次交易
+- 同一触发周期内，交易金额基于“首个触发时的可用金额”按 `maxTradePercent` 计算
+- 若输入币是 SUI，会先预留 `suiGasReserve` 再计算可用金额
 
 ### 4. 冷却机制
 
