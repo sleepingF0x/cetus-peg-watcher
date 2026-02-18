@@ -1,5 +1,6 @@
 import fs from 'fs';
 import BN from 'bn.js';
+import axios from 'axios';
 import { AggregatorClient } from '@cetusprotocol/aggregator-sdk';
 import { SuiClient } from '@mysten/sui/client';
 import { Ed25519Keypair } from '@mysten/sui/keypairs/ed25519';
@@ -20,6 +21,8 @@ export interface TradeExecutionResult {
   inputCoin: string;
   outputCoin: string;
   amountIn?: string;
+  amountOut?: string;
+  realizedPrice?: number;
   digest?: string;
 }
 
@@ -32,6 +35,23 @@ interface TraderContext {
 
 let cachedContextKey = '';
 let cachedContext: TraderContext | null = null;
+const decimalsCache = new Map<string, number>();
+
+interface BalanceChange {
+  owner?: {
+    AddressOwner?: string;
+  };
+  coinType?: string;
+  amount?: string;
+}
+
+interface TransactionBlockResult {
+  balanceChanges?: BalanceChange[];
+}
+
+interface RpcResponse<T> {
+  result?: T;
+}
 
 function loadKeypairFromMnemonic(mnemonicFile: string, derivationPath: string): Ed25519Keypair {
   const mnemonic = fs.readFileSync(mnemonicFile, 'utf-8').trim();
@@ -80,6 +100,128 @@ function extractBalance(response: unknown): bigint {
 function extractDigest(response: unknown): string | undefined {
   const digest = extractStringField(response, 'digest') || extractStringField(response, 'transactionDigest');
   return digest || undefined;
+}
+
+function parseSignedAmount(value: string | undefined): bigint {
+  if (!value) {
+    return 0n;
+  }
+
+  try {
+    return BigInt(value);
+  } catch {
+    return 0n;
+  }
+}
+
+function normalizeAddressOwner(owner: BalanceChange['owner']): string | null {
+  const address = owner?.AddressOwner;
+  if (!address) {
+    return null;
+  }
+  return address.toLowerCase();
+}
+
+function sumCoinAmountForOwner(
+  changes: BalanceChange[],
+  ownerAddress: string,
+  coinType: string,
+): bigint {
+  const normalizedOwner = ownerAddress.toLowerCase();
+  const normalizedCoinType = coinType.toLowerCase();
+  let total = 0n;
+
+  for (const change of changes) {
+    const owner = normalizeAddressOwner(change.owner);
+    if (!owner || owner !== normalizedOwner) {
+      continue;
+    }
+    if (!change.coinType || change.coinType.toLowerCase() !== normalizedCoinType) {
+      continue;
+    }
+    total += parseSignedAmount(change.amount);
+  }
+
+  return total;
+}
+
+async function getCoinDecimals(rpcUrl: string, coinType: string): Promise<number | null> {
+  const cached = decimalsCache.get(coinType);
+  if (cached !== undefined) {
+    return cached;
+  }
+
+  try {
+    const response = await axios.post<RpcResponse<{ decimals?: number }>>(rpcUrl, {
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'suix_getCoinMetadata',
+      params: [coinType],
+    }, {
+      timeout: 15000,
+    });
+
+    const decimals = response.data.result?.decimals;
+    if (typeof decimals === 'number') {
+      decimalsCache.set(coinType, decimals);
+      return decimals;
+    }
+  } catch {
+    return null;
+  }
+
+  return null;
+}
+
+async function getExecutionMetrics(
+  rpcUrl: string,
+  digest: string,
+  ownerAddress: string,
+  inputCoin: string,
+  outputCoin: string,
+): Promise<{ amountOut?: string; realizedPrice?: number }> {
+  const response = await axios.post<RpcResponse<TransactionBlockResult>>(rpcUrl, {
+    jsonrpc: '2.0',
+    id: 1,
+    method: 'sui_getTransactionBlock',
+    params: [
+      digest,
+      {
+        showBalanceChanges: true,
+      },
+    ],
+  }, {
+    timeout: 20000,
+  });
+
+  const balanceChanges = response.data.result?.balanceChanges ?? [];
+  const inputDelta = sumCoinAmountForOwner(balanceChanges, ownerAddress, inputCoin);
+  const outputDelta = sumCoinAmountForOwner(balanceChanges, ownerAddress, outputCoin);
+
+  const actualInput = inputDelta < 0n ? -inputDelta : 0n;
+  const actualOutput = outputDelta > 0n ? outputDelta : 0n;
+  if (actualInput === 0n || actualOutput === 0n) {
+    return {};
+  }
+
+  const [inputDecimals, outputDecimals] = await Promise.all([
+    getCoinDecimals(rpcUrl, inputCoin),
+    getCoinDecimals(rpcUrl, outputCoin),
+  ]);
+
+  if (inputDecimals === null || outputDecimals === null) {
+    return {
+      amountOut: actualOutput.toString(),
+    };
+  }
+
+  const realizedPrice = (Number(actualOutput) / Number(actualInput))
+    * Math.pow(10, inputDecimals - outputDecimals);
+
+  return {
+    amountOut: actualOutput.toString(),
+    realizedPrice,
+  };
 }
 
 function isSuiCoinType(coinType: string): boolean {
@@ -188,6 +330,27 @@ export async function executeTrade(
   });
 
   const execution = await context.aggregator.sendTransaction(txb, context.keypair);
+  const digest = extractDigest(execution);
+  let amountOut: string | undefined;
+  let realizedPrice: number | undefined;
+
+  if (digest) {
+    try {
+      const executionMetrics = await getExecutionMetrics(
+        tradeConfig.rpcUrl!,
+        digest,
+        context.walletAddress,
+        inputCoin,
+        outputCoin,
+      );
+      amountOut = executionMetrics.amountOut;
+      realizedPrice = executionMetrics.realizedPrice;
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.warn(`[Trade] Unable to fetch execution metrics for ${digest}: ${message}`);
+    }
+  }
+
   return {
     success: true,
     skipped: false,
@@ -196,6 +359,8 @@ export async function executeTrade(
     inputCoin,
     outputCoin,
     amountIn: tradableAmount.toString(),
-    digest: extractDigest(execution),
+    amountOut,
+    realizedPrice,
+    digest,
   };
 }

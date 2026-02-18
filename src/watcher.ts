@@ -68,6 +68,33 @@ function calculateAveragePriceWithinWindow(history: PricePoint[], now: number, w
   return total / count;
 }
 
+function isConditionMetByPrice(
+  condition: 'above' | 'below',
+  observedPrice: number,
+  thresholdPrice: number,
+): boolean {
+  if (condition === 'above') {
+    return observedPrice >= thresholdPrice;
+  }
+  return observedPrice <= thresholdPrice;
+}
+
+function calculateEdgeBps(
+  condition: 'above' | 'below',
+  observedPrice: number,
+  thresholdPrice: number,
+): number {
+  if (thresholdPrice <= 0) {
+    return 0;
+  }
+
+  if (condition === 'above') {
+    return ((observedPrice - thresholdPrice) / thresholdPrice) * 10000;
+  }
+
+  return ((thresholdPrice - observedPrice) / thresholdPrice) * 10000;
+}
+
 export async function startWatcher(config: Config) {
   const state = loadState(STATE_FILE);
   const priceHistory = new Map<string, PricePoint[]>();
@@ -181,31 +208,74 @@ export async function startWatcher(config: Config) {
               : null;
 
             if (config.trade?.enabled && item.tradeEnabled && tradeSide !== null) {
+              const triggerThreshold = item.alertMode === 'price'
+                ? item.targetPrice!
+                : averageTargetPrice;
+
+              if (triggerThreshold === null) {
+                console.warn(`[Trade] Skip ${tradeSide.toUpperCase()} for ${item.baseToken}: missing trigger threshold`);
+                continue;
+              }
+
               const tradeCooldownKey = `${item.baseToken}::${item.quoteToken}::${tradeSide}::trade`;
 
               if (shouldAlert(tradeCooldownKey, item.tradeCooldownSeconds || 1800, state)) {
                 console.log(
                   `[Trade] Triggered ${tradeSide.toUpperCase()} for ${item.baseToken} at $${price.toFixed(6)} (cooldown=${item.tradeCooldownSeconds || 1800}s)`,
                 );
+
+                const requotedPrice = await getTokenPrice(group.baseToken, group.quoteToken, undefined, { forceRefresh: true });
+                if (requotedPrice === null) {
+                  console.warn(`[Trade] Skip ${tradeSide.toUpperCase()} for ${item.baseToken}: failed to re-quote before execution`);
+                  continue;
+                }
+
+                const stillValid = isConditionMetByPrice(item.condition, requotedPrice, triggerThreshold);
+                if (!stillValid) {
+                  console.log(
+                    `[Trade] Skip ${tradeSide.toUpperCase()} for ${item.baseToken}: trigger no longer valid (re-quote=$${requotedPrice.toFixed(6)}, threshold=$${triggerThreshold.toFixed(6)})`,
+                  );
+                  continue;
+                }
+
+                const edgeBps = calculateEdgeBps(item.condition, requotedPrice, triggerThreshold);
+                if (edgeBps < (item.minTradeEdgeBps || 0)) {
+                  console.log(
+                    `[Trade] Skip ${tradeSide.toUpperCase()} for ${item.baseToken}: edge ${edgeBps.toFixed(2)}bps < minTradeEdgeBps ${(item.minTradeEdgeBps || 0).toFixed(2)}bps`,
+                  );
+                  continue;
+                }
+
                 try {
                   const tradeResult = await executeTrade(config.trade, item, tradeSide);
                   if (tradeResult.success) {
+                    const realizedPriceText = tradeResult.realizedPrice === undefined
+                      ? '-'
+                      : `$${tradeResult.realizedPrice.toFixed(6)}`;
                     console.log(
-                      `[Trade] Success ${tradeSide.toUpperCase()} for ${item.baseToken}, amountIn=${tradeResult.amountIn ?? '-'}, digest=${tradeResult.digest ?? '-'}`,
+                      `[Trade] Success ${tradeSide.toUpperCase()} for ${item.baseToken}, amountIn=${tradeResult.amountIn ?? '-'}, amountOut=${tradeResult.amountOut ?? '-'}, realized=${realizedPriceText}, digest=${tradeResult.digest ?? '-'}`,
                     );
                     recordAlert(tradeCooldownKey, state);
                     saveState(STATE_FILE, state);
 
                     const title = `Trade Executed (${tradeSide.toUpperCase()})`;
                     const digestPart = tradeResult.digest ? `, tx: ${tradeResult.digest}` : '';
-                    const message = `${item.baseToken} @ $${price.toFixed(4)}, amountIn: ${tradeResult.amountIn}${digestPart}`;
+                    const realizedPart = tradeResult.realizedPrice === undefined
+                      ? ''
+                      : `, realized: $${tradeResult.realizedPrice.toFixed(4)}`;
+                    const amountOutPart = tradeResult.amountOut ? `, amountOut: ${tradeResult.amountOut}` : '';
+                    const message = `${item.baseToken} quote @ $${requotedPrice.toFixed(4)}${realizedPart}, amountIn: ${tradeResult.amountIn}${amountOutPart}${digestPart}`;
                     await sendBarkAlert(config.barkUrl, title, message);
 
                     const telegramMessage = [
                       `<b>Trade Executed (${tradeSide.toUpperCase()})</b>`,
                       `Pair: <code>${item.baseToken}</code> / <code>${item.quoteToken}</code>`,
-                      `Price: <code>${price.toFixed(6)}</code>`,
+                      `Quote: <code>${requotedPrice.toFixed(6)}</code>`,
+                      `Realized: <code>${tradeResult.realizedPrice === undefined ? '-' : tradeResult.realizedPrice.toFixed(6)}</code>`,
+                      `Threshold: <code>${triggerThreshold.toFixed(6)}</code>`,
+                      `Edge: <code>${edgeBps.toFixed(2)}bps</code>`,
                       `Amount In: <code>${tradeResult.amountIn ?? '-'}</code>`,
+                      `Amount Out: <code>${tradeResult.amountOut ?? '-'}</code>`,
                       `Tx: <code>${tradeResult.digest ?? '-'}</code>`,
                     ].join('\n');
                     const telegramSent = await sendTelegramMessage(config.telegram, telegramMessage);

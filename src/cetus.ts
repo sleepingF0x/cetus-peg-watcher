@@ -52,19 +52,25 @@ async function getDecimals(coinType: string): Promise<number | null> {
 export async function getTokenPrice(
   baseToken: string,
   quoteToken: string,
-  amount?: string
+  amount?: string,
+  options?: {
+    forceRefresh?: boolean;
+  }
 ): Promise<number | null> {
+  const forceRefresh = options?.forceRefresh === true;
   const normalizedAmountKey = amount && amount.length > 0 ? amount : DEFAULT_QUERY_AMOUNT_KEY;
   const cacheKey = `${baseToken}::${quoteToken}::${normalizedAmountKey}`;
   const now = Date.now();
-  const cachedPrice = priceCache.get(cacheKey);
-  if (cachedPrice && cachedPrice.expiresAt > now) {
-    return cachedPrice.value;
-  }
+  if (!forceRefresh) {
+    const cachedPrice = priceCache.get(cacheKey);
+    if (cachedPrice && cachedPrice.expiresAt > now) {
+      return cachedPrice.value;
+    }
 
-  const inFlight = inFlightPriceRequests.get(cacheKey);
-  if (inFlight) {
-    return inFlight;
+    const inFlight = inFlightPriceRequests.get(cacheKey);
+    if (inFlight) {
+      return inFlight;
+    }
   }
 
   const requestPromise = (async (): Promise<number | null> => {

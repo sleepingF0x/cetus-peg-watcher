@@ -9,6 +9,7 @@ export interface WatchItem {
   cooldownSeconds?: number;
   alertCooldownSeconds?: number;
   tradeCooldownSeconds?: number;
+  minTradeEdgeBps?: number;
   avgWindowMinutes?: number;
   avgTargetPercent?: number;
   avgResumeFactor?: number;
@@ -44,6 +45,7 @@ const DEFAULT_QUOTE_TOKEN = '0xdba34672e30cb065b1f93e3ab55318768fd6fef66c15942c9
 const DEFAULT_POLL_INTERVAL = 30;
 const DEFAULT_ALERT_COOLDOWN_SECONDS = 1800;
 const DEFAULT_TRADE_COOLDOWN_SECONDS = 1800;
+const DEFAULT_MIN_TRADE_EDGE_BPS = 0;
 const DEFAULT_AVG_WINDOW_MINUTES = 10;
 const DEFAULT_AVG_RESUME_FACTOR = 0.95;
 const DEFAULT_TRADE_RPC_URL = 'https://fullnode.mainnet.sui.io:443';
@@ -139,6 +141,9 @@ export function loadConfig(filePath: string): Config {
     if (item.tradeCooldownSeconds !== undefined && (typeof item.tradeCooldownSeconds !== 'number' || item.tradeCooldownSeconds <= 0)) {
       throw new Error(`item[${index}].tradeCooldownSeconds must be a positive number`);
     }
+    if (item.minTradeEdgeBps !== undefined && (typeof item.minTradeEdgeBps !== 'number' || item.minTradeEdgeBps < 0)) {
+      throw new Error(`item[${index}].minTradeEdgeBps must be a non-negative number`);
+    }
 
     const hasTargetPrice = item.targetPrice !== undefined;
     const hasAvgTargetPercent = item.avgTargetPercent !== undefined;
@@ -157,6 +162,7 @@ export function loadConfig(filePath: string): Config {
       pollInterval: item.pollInterval || DEFAULT_POLL_INTERVAL,
       alertCooldownSeconds: item.alertCooldownSeconds || item.cooldownSeconds || DEFAULT_ALERT_COOLDOWN_SECONDS,
       tradeCooldownSeconds: item.tradeCooldownSeconds || item.cooldownSeconds || DEFAULT_TRADE_COOLDOWN_SECONDS,
+      minTradeEdgeBps: item.minTradeEdgeBps ?? DEFAULT_MIN_TRADE_EDGE_BPS,
       alertMode: inferredMode,
       tradeEnabled: item.tradeEnabled !== false,
       avgWindowMinutes: inferredMode === 'avg_percent'
