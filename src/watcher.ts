@@ -1,7 +1,6 @@
 import { Config } from './config.js';
 import { getTokenPrice } from './cetus.js';
 import { loadState, saveState, shouldAlert, recordAlert } from './state.js';
-import { sendBarkAlert } from './notifier.js';
 import { executeTrade, getCurrentTradableAmount } from './trader.js';
 import { sendTelegramMessage } from './telegram.js';
 
@@ -100,6 +99,7 @@ export async function startWatcher(config: Config) {
   const priceHistory = new Map<string, PricePoint[]>();
   const averagePauseRules = new Map<string, AveragePauseRule>();
   const tradeCycleBaseAvailable = new Map<string, string>();
+  const consecutiveTradeHits = new Map<string, number>();
   const watchGroups = new Map<string, WatchGroup>();
 
   config.items.forEach((item, index) => {
@@ -208,7 +208,17 @@ export async function startWatcher(config: Config) {
               ? (item.condition === 'below' ? 'buy' : 'sell')
               : null;
 
+            const hitCount = isConditionMet
+              ? (consecutiveTradeHits.get(itemId) ?? 0) + 1
+              : 0;
+            if (isConditionMet) {
+              consecutiveTradeHits.set(itemId, hitCount);
+            } else {
+              consecutiveTradeHits.delete(itemId);
+            }
+
             if (config.trade?.enabled && item.tradeEnabled && tradeSide !== null) {
+              const requiredConfirmations = item.tradeConfirmations || 2;
               const triggerThreshold = item.alertMode === 'price'
                 ? item.targetPrice!
                 : averageTargetPrice;
@@ -229,6 +239,13 @@ export async function startWatcher(config: Config) {
                 }
                 lockedCycleAvailableAmount = currentTradableAmount.toString();
                 tradeCycleBaseAvailable.set(tradeCooldownKey, lockedCycleAvailableAmount);
+              }
+
+              if (hitCount < requiredConfirmations) {
+                console.log(
+                  `[Trade] Waiting confirmation ${hitCount}/${requiredConfirmations} for ${item.baseToken} (${tradeSide})`,
+                );
+                continue;
               }
 
               if (shouldAlert(tradeCooldownKey, item.tradeCooldownSeconds || 1800, state)) {
@@ -265,15 +282,6 @@ export async function startWatcher(config: Config) {
                     );
                     recordAlert(tradeCooldownKey, state);
                     saveState(STATE_FILE, state);
-
-                    const title = `Trade Executed (${tradeSide.toUpperCase()})`;
-                    const digestPart = tradeResult.digest ? `, tx: ${tradeResult.digest}` : '';
-                    const realizedPart = tradeResult.realizedPrice === undefined
-                      ? ''
-                      : `, realized: $${tradeResult.realizedPrice.toFixed(4)}`;
-                    const amountOutPart = tradeResult.amountOut ? `, amountOut: ${tradeResult.amountOut}` : '';
-                    const message = `${item.baseToken} quote @ $${requotedPrice.toFixed(4)}${realizedPart}, amountIn: ${tradeResult.amountIn}${amountOutPart}${digestPart}`;
-                    await sendBarkAlert(config.barkUrl, title, message);
 
                     const telegramMessage = [
                       `<b>Trade Executed (${tradeSide.toUpperCase()})</b>`,
@@ -315,21 +323,30 @@ export async function startWatcher(config: Config) {
               tradeCycleBaseAvailable.delete(`${item.baseToken}::${item.quoteToken}::sell::trade`);
             }
 
-            if (isConditionMet) {
+            const requiredConfirmations = item.tradeConfirmations || 2;
+            const isAlertConfirmed = isConditionMet && hitCount >= requiredConfirmations;
+
+            if (isAlertConfirmed) {
               if (shouldAlert(item.baseToken, item.alertCooldownSeconds || 1800, state)) {
                 console.log(
                   `[Alert] Triggered for ${item.baseToken} at $${price.toFixed(6)} (cooldown=${item.alertCooldownSeconds || 1800}s)`,
                 );
-                const title = 'Price Alert';
                 const targetPrice = item.targetPrice;
                 const reason = item.alertMode === 'price'
                   ? `target: ${item.condition} $${targetPrice!.toFixed(4)}`
                   : `${item.avgWindowMinutes}m avg x ${item.avgTargetPercent}%: ${item.condition} $${averageTargetPrice!.toFixed(4)}`;
-                const message = `${item.baseToken} price is $${price.toFixed(4)} (${reason})`;
+                const telegramMessage = [
+                  '<b>Price Alert</b>',
+                  `Token: <code>${item.baseToken}</code>`,
+                  `Quote: <code>${item.quoteToken}</code>`,
+                  `Current: <code>${price.toFixed(6)}</code>`,
+                  `Reason: <code>${reason}</code>`,
+                  `Confirmations: <code>${hitCount}/${requiredConfirmations}</code>`,
+                ].join('\n');
 
-                const success = await sendBarkAlert(config.barkUrl, title, message);
-                if (success) {
-                  console.log(`[Alert] Bark notification sent for ${item.baseToken}`);
+                const telegramSent = await sendTelegramMessage(config.telegram, telegramMessage);
+                if (telegramSent) {
+                  console.log(`[Telegram] Price alert message sent for ${item.baseToken}`);
                   recordAlert(item.baseToken, state);
 
                   if (item.alertMode === 'avg_percent' && avgWindowPrice !== null) {
@@ -348,7 +365,7 @@ export async function startWatcher(config: Config) {
 
                   saveState(STATE_FILE, state);
                 } else {
-                  console.error(`[Alert] Bark notification failed for ${item.baseToken}`);
+                  console.error(`[Telegram] Price alert message failed for ${item.baseToken}`);
                 }
               } else {
                 console.log(

@@ -9,6 +9,7 @@ export interface WatchItem {
   cooldownSeconds?: number;
   alertCooldownSeconds?: number;
   tradeCooldownSeconds?: number;
+  tradeConfirmations?: number;
   avgWindowMinutes?: number;
   avgTargetPercent?: number;
   avgResumeFactor?: number;
@@ -34,7 +35,7 @@ export interface TelegramConfig {
 }
 
 export interface Config {
-  barkUrl: string;
+  barkUrl?: string;
   items: WatchItem[];
   trade?: TradeConfig;
   telegram?: TelegramConfig;
@@ -44,6 +45,7 @@ const DEFAULT_QUOTE_TOKEN = '0xdba34672e30cb065b1f93e3ab55318768fd6fef66c15942c9
 const DEFAULT_POLL_INTERVAL = 30;
 const DEFAULT_ALERT_COOLDOWN_SECONDS = 1800;
 const DEFAULT_TRADE_COOLDOWN_SECONDS = 1800;
+const DEFAULT_TRADE_CONFIRMATIONS = 2;
 const DEFAULT_AVG_WINDOW_MINUTES = 10;
 const DEFAULT_AVG_RESUME_FACTOR = 0.95;
 const DEFAULT_TRADE_RPC_URL = 'https://fullnode.mainnet.sui.io:443';
@@ -58,10 +60,6 @@ export function loadConfig(filePath: string): Config {
 
   const rawData = fs.readFileSync(filePath, 'utf-8');
   const config = JSON.parse(rawData) as Config;
-
-  if (!config.barkUrl) {
-    throw new Error('barkUrl is required in config');
-  }
 
   if (!config.items || !Array.isArray(config.items) || config.items.length === 0) {
     throw new Error('items array is required and must not be empty');
@@ -139,6 +137,9 @@ export function loadConfig(filePath: string): Config {
     if (item.tradeCooldownSeconds !== undefined && (typeof item.tradeCooldownSeconds !== 'number' || item.tradeCooldownSeconds <= 0)) {
       throw new Error(`item[${index}].tradeCooldownSeconds must be a positive number`);
     }
+    if (item.tradeConfirmations !== undefined && (!Number.isInteger(item.tradeConfirmations) || item.tradeConfirmations <= 0)) {
+      throw new Error(`item[${index}].tradeConfirmations must be a positive integer`);
+    }
     const hasTargetPrice = item.targetPrice !== undefined;
     const hasAvgTargetPercent = item.avgTargetPercent !== undefined;
     if (hasTargetPrice === hasAvgTargetPercent) {
@@ -156,6 +157,7 @@ export function loadConfig(filePath: string): Config {
       pollInterval: item.pollInterval || DEFAULT_POLL_INTERVAL,
       alertCooldownSeconds: item.alertCooldownSeconds || item.cooldownSeconds || DEFAULT_ALERT_COOLDOWN_SECONDS,
       tradeCooldownSeconds: item.tradeCooldownSeconds || item.cooldownSeconds || DEFAULT_TRADE_COOLDOWN_SECONDS,
+      tradeConfirmations: item.tradeConfirmations ?? DEFAULT_TRADE_CONFIRMATIONS,
       alertMode: inferredMode,
       tradeEnabled: item.tradeEnabled !== false,
       avgWindowMinutes: inferredMode === 'avg_percent'

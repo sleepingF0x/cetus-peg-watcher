@@ -22,6 +22,7 @@
       "pollInterval": 60,
       "alertCooldownSeconds": 1800,
       "tradeCooldownSeconds": 300,
+      "tradeConfirmations": 2,
       "avgWindowMinutes": 10,
       "avgTargetPercent": 103,
       "avgResumeFactor": 0.95
@@ -30,7 +31,8 @@
       "baseToken": "0x6864a6f921804860930db6ddbe2e16acdf8504495ea7481637a1c8b9a8fe54b::cetus::CETUS",
       "alertMode": "price",
       "targetPrice": 0.3,
-      "condition": "below"
+      "condition": "below",
+      "tradeConfirmations": 2
     }
   ]
 }
