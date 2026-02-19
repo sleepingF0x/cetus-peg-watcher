@@ -1,6 +1,6 @@
 # Cetus Peg Watcher
 
-Sui 区块链代币价格监控与自动交易工具。基于 Cetus DEX Aggregator API 监控价格，当价格突破阈值时发送 Bark iOS 推送通知，并可选地执行自动交易。
+Sui 区块链代币价格监控与自动交易工具。基于 Cetus DEX Aggregator API 监控价格，当价格突破阈值时发送 Telegram 通知，并可选地执行自动交易。
 
 ## 功能特性
 
@@ -8,7 +8,7 @@ Sui 区块链代币价格监控与自动交易工具。基于 Cetus DEX Aggregat
 - **双模式触发**：
   - 固定价格模式：`targetPrice` 绝对阈值
   - 均价百分比模式：`avgWindowMinutes` 内均价 × `avgTargetPercent`%
-- **iOS 推送通知**：Bark 实时推送，支持电话铃声 + 紧急提醒
+- **Telegram 通知**：价格预警与交易结果统一推送
 - **自动交易**（可选）：满足条件时自动执行买卖（需配置助记词）
 - **智能冷却**：预警和交易分别冷却，防止重复触发
 - **状态持久化**：重启后保留冷却状态
@@ -50,13 +50,12 @@ npm start
 
 | 字段 | 类型 | 必填 | 默认值 | 说明 |
 |------|------|------|--------|------|
-| `barkUrl` | string | ✅ | - | Bark 设备通知 URL，如 `https://api.day.app/xxx` |
+| `barkUrl` | string | - | - | 兼容旧配置字段，当前不用于发送通知 |
 | `telegram` | object | - | - | Telegram Bot 通知配置（见下方） |
 | `trade` | object | - | - | 交易配置（见下方） |
 | `items` | array | ✅ | - | 监控项数组，至少 1 个 |
 
-`barkUrl` 支持直接带 Bark 参数，例如：
-`https://api.day.app/yourkey?call=1&level=critical&sound=alarm`
+`barkUrl` 仅保留兼容；通知统一使用 Telegram。
 
 ### Telegram 配置 (`telegram`)
 
@@ -91,6 +90,7 @@ npm start
 | `pollInterval` | number | - | `30` | 轮询间隔（秒） |
 | `alertCooldownSeconds` | number | - | `1800` | 预警冷却时间（秒） |
 | `tradeCooldownSeconds` | number | - | `1800` | 交易冷却时间（秒） |
+| `tradeConfirmations` | number | - | `2` | 交易触发前需要连续命中的轮询次数（仅影响交易，不影响预警） |
 | `avgWindowMinutes` | number | - | `10` | 均价计算窗口（分钟），仅 avg_percent 模式有效 |
 | `avgResumeFactor` | number | - | `0.95` | 告警后恢复均价采样的回归系数（0~1，仅 avg_percent） |
 | `alertMode` | string | - | 自动推断 | 触发模式：`price` 或 `avg_percent`，不填时根据 targetPrice/avgTargetPercent 自动推断 |
@@ -129,6 +129,7 @@ npm start
 ### 3.5 交易前复核（避免无效成交）
 
 - 触发交易后，会立刻再次请求最新报价（re-quote）
+- 交易前需要连续 `tradeConfirmations` 次轮询都满足条件（默认 2 次）
 - 若 re-quote 已不满足阈值条件，则跳过本次交易
 - 同一触发周期内，交易金额基于“首个触发时的可用金额”按 `maxTradePercent` 计算
 - 若输入币是 SUI，会先预留 `suiGasReserve` 再计算可用金额
@@ -169,7 +170,7 @@ npm start
    - 使用助记词签名并广播到链上
 
 4. **结果处理**
-   - 成功：发送 Bark 通知（含交易哈希）
+   - 成功：发送 Telegram 通知（含交易哈希）
    - 成功：基于交易哈希回查链上 balanceChanges，提取 `amountIn/amountOut` 并计算 `realized` 成交价
    - 成功：如启用 Telegram，则额外发送交易消息到 Bot
    - 失败：记录日志，不发送通知
@@ -182,7 +183,7 @@ npm start
 
 ```json
 {
-  "barkUrl": "https://api.day.app/xxx?call=1&level=critical&sound=alarm",
+  "barkUrl": "",
   "telegram": {
     "enabled": false,
     "botToken": "123456789:YOUR_BOT_TOKEN",
@@ -199,6 +200,7 @@ npm start
       "pollInterval": 60,
       "alertCooldownSeconds": 1800,
       "tradeCooldownSeconds": 300,
+      "tradeConfirmations": 2,
       "tradeEnabled": false
     }
   ]
@@ -209,7 +211,7 @@ npm start
 
 ```json
 {
-  "barkUrl": "https://api.day.app/xxx?call=1&level=critical&sound=alarm",
+  "barkUrl": "",
   "telegram": {
     "enabled": true,
     "botToken": "123456789:YOUR_BOT_TOKEN",
@@ -235,6 +237,7 @@ npm start
       "pollInterval": 60,
       "alertCooldownSeconds": 1800,
       "tradeCooldownSeconds": 300,
+      "tradeConfirmations": 2,
       "tradeEnabled": true
     }
   ]
@@ -305,7 +308,7 @@ docker-compose up --build
 │   ├── watcher.ts    # 轮询监控逻辑
 │   ├── cetus.ts      # 价格查询 API
 │   ├── trader.ts     # 交易执行模块
-│   ├── notifier.ts   # Bark 推送
+│   ├── notifier.ts   # 兼容保留（默认不使用）
 │   └── state.ts      # 冷却状态管理
 ├── config.example.json   # 配置示例
 ├── config.json          # 运行时配置（不提交）
