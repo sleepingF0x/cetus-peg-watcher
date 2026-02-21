@@ -225,6 +225,15 @@ export async function startWatcher(config: Config) {
 
               if (triggerThreshold === null) {
                 console.warn(`[Trade] Skip ${tradeSide.toUpperCase()} for ${item.baseToken}: missing trigger threshold`);
+
+                const alertMessage = [
+                  '<b>⚠️ 交易配置错误</b>',
+                  `Token: <code>${item.baseToken}</code>`,
+                  `Side: <code>${tradeSide.toUpperCase()}</code>`,
+                  `原因: 缺少触发阈值配置`,
+                ].join('\n');
+                await sendTelegramMessage(config.telegram, alertMessage).catch(() => {});
+
                 continue;
               }
 
@@ -235,6 +244,15 @@ export async function startWatcher(config: Config) {
                 const currentTradableAmount = await getCurrentTradableAmount(config.trade, item, tradeSide);
                 if (currentTradableAmount <= 0n) {
                   console.warn(`[Trade] Skip ${tradeSide.toUpperCase()} for ${item.baseToken}: insufficient tradable balance`);
+
+                  const alertMessage = [
+                    '<b>⚠️ 交易余额不足</b>',
+                    `Pair: <code>${item.baseToken}</code> / <code>${item.quoteToken}</code>`,
+                    `Side: <code>${tradeSide.toUpperCase()}</code>`,
+                    `原因: 钱包中可用于交易的余额不足`,
+                  ].join('\n');
+                  await sendTelegramMessage(config.telegram, alertMessage).catch(() => {});
+
                   continue;
                 }
                 lockedCycleAvailableAmount = currentTradableAmount.toString();
@@ -256,6 +274,15 @@ export async function startWatcher(config: Config) {
                 const requotedPrice = await getTokenPrice(group.baseToken, group.quoteToken, undefined, { forceRefresh: true });
                 if (requotedPrice === null) {
                   console.warn(`[Trade] Skip ${tradeSide.toUpperCase()} for ${item.baseToken}: failed to re-quote before execution`);
+
+                  const alertMessage = [
+                    '<b>⚠️ 交易失败</b>',
+                    `Pair: <code>${item.baseToken}</code> / <code>${item.quoteToken}</code>`,
+                    `Side: <code>${tradeSide.toUpperCase()}</code>`,
+                    `原因: 重新获取报价失败`,
+                  ].join('\n');
+                  await sendTelegramMessage(config.telegram, alertMessage).catch(() => {});
+
                   continue;
                 }
 
@@ -264,6 +291,17 @@ export async function startWatcher(config: Config) {
                   console.log(
                     `[Trade] Skip ${tradeSide.toUpperCase()} for ${item.baseToken}: trigger no longer valid (re-quote=$${requotedPrice.toFixed(6)}, threshold=$${triggerThreshold.toFixed(6)})`,
                   );
+
+                  const alertMessage = [
+                    '<b>ℹ️ 交易取消</b>',
+                    `Pair: <code>${item.baseToken}</code> / <code>${item.quoteToken}</code>`,
+                    `Side: <code>${tradeSide.toUpperCase()}</code>`,
+                    `原因: 价格条件已失效`,
+                    `Re-quote: <code>$${requotedPrice.toFixed(6)}</code>`,
+                    `Threshold: <code>$${triggerThreshold.toFixed(6)}</code>`,
+                  ].join('\n');
+                  await sendTelegramMessage(config.telegram, alertMessage).catch(() => {});
+
                   continue;
                 }
 
@@ -304,12 +342,36 @@ export async function startWatcher(config: Config) {
                     }
                   } else if (tradeResult.skipped) {
                     console.warn(`[Trade] Skipped ${tradeSide.toUpperCase()} for ${item.baseToken}: ${tradeResult.reason}`);
+
+                    const alertMessage = [
+                      '<b>ℹ️ 交易已跳过</b>',
+                      `Pair: <code>${item.baseToken}</code> / <code>${item.quoteToken}</code>`,
+                      `Side: <code>${tradeSide.toUpperCase()}</code>`,
+                      `原因: <code>${tradeResult.reason}</code>`,
+                    ].join('\n');
+                    await sendTelegramMessage(config.telegram, alertMessage).catch(() => {});
                   } else if (!tradeResult.skipped) {
                     console.error(`[Trade] Execution failed for ${item.baseToken}: ${tradeResult.reason}`);
+
+                    const alertMessage = [
+                      '<b>❌ 交易执行失败</b>',
+                      `Pair: <code>${item.baseToken}</code> / <code>${item.quoteToken}</code>`,
+                      `Side: <code>${tradeSide.toUpperCase()}</code>`,
+                      `原因: <code>${tradeResult.reason}</code>`,
+                    ].join('\n');
+                    await sendTelegramMessage(config.telegram, alertMessage).catch(() => {});
                   }
                 } catch (error: unknown) {
                   const err = error as Error;
                   console.error(`[Trade] Error executing ${tradeSide} for ${item.baseToken}: ${err.message}`);
+
+                  const alertMessage = [
+                    '<b>❌ 交易异常</b>',
+                    `Pair: <code>${item.baseToken}</code> / <code>${item.quoteToken}</code>`,
+                    `Side: <code>${tradeSide.toUpperCase()}</code>`,
+                    `错误: <code>${err.message}</code>`,
+                  ].join('\n');
+                  await sendTelegramMessage(config.telegram, alertMessage).catch(() => {});
                 }
               } else {
                 console.log(
