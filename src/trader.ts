@@ -372,7 +372,7 @@ export async function executeTrade(
   await context.aggregator.fastRouterSwap({
     router: route,
     txb,
-    slippage: (tradeConfig.slippagePercent || 0.1) / 100,
+    slippage: (tradeConfig.slippagePercent || 0.5) / 100,
   });
 
   const execution = await context.aggregator.sendTransaction(txb, context.keypair);
