@@ -365,6 +365,27 @@ export async function startWatcher(config: Config) {
                   const err = error as Error;
                   console.error(`[Trade] Error executing ${tradeSide} for ${item.baseToken}: ${err.message}`);
 
+                  // 交易失败时重置确认计数和锁定金额，防止立即重试
+                  consecutiveTradeHits.delete(itemId);
+                  tradeCycleBaseAvailable.delete(tradeCooldownKey);
+
+                  // 智能错误处理：根据错误类型采取不同策略
+                  const isObjectLockedError = err.message.includes('locked by a different transaction') ||
+                    err.message.includes('not available for consumption') ||
+                    err.message.includes('already locked');
+                  const isSlippageError = err.message.includes('slippage') || err.message.includes('err_amount_out_slippage_check_failed');
+
+                  if (isObjectLockedError) {
+                    // 对象被锁定：前一个交易还在 pending，添加短冷却（5秒）避免冲突
+                    const objectLockCooldownKey = `${tradeCooldownKey}::objectLock`;
+                    console.log(`[Trade] Object locked, adding short cooldown for ${item.baseToken}`);
+                    recordAlert(objectLockCooldownKey, state);
+                    // 同时记录普通交易冷却，但使用更短的 5 秒
+                    state.lastAlertTime[tradeCooldownKey] = Date.now() - ((item.tradeCooldownSeconds || 1800) - 5) * 1000;
+                    saveState(STATE_FILE, state);
+                  }
+                  // 滑点错误：不添加额外冷却，只重置确认计数，让系统可以快速重试
+
                   const alertMessage = [
                     '<b>❌ 交易异常</b>',
                     `Pair: <code>${item.baseToken}</code> / <code>${item.quoteToken}</code>`,
