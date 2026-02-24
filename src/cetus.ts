@@ -25,7 +25,7 @@ const decimalsCache = new Map<string, number>();
 const priceCache = new Map<string, { value: number | null; expiresAt: number }>();
 const inFlightPriceRequests = new Map<string, Promise<number | null>>();
 
-async function getDecimals(coinType: string): Promise<number | null> {
+export async function getCoinDecimals(coinType: string): Promise<number | null> {
   const cached = decimalsCache.get(coinType);
   if (cached !== undefined) return cached;
 
@@ -80,8 +80,8 @@ export async function getTokenPrice(
   for (let i = 0; i <= retries; i++) {
     try {
       const [baseDecimals, quoteDecimals] = await Promise.all([
-        getDecimals(baseToken),
-        getDecimals(quoteToken),
+        getCoinDecimals(baseToken),
+        getCoinDecimals(quoteToken),
       ]);
 
       if (baseDecimals === null || quoteDecimals === null) {

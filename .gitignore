@@ -3,3 +3,5 @@ dist
 state.json
 config.json
 .sisyphus
+wallet.mnemonic
+*.mnemonic
