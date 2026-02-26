@@ -6,6 +6,7 @@ import { SuiClient } from '@mysten/sui/client';
 import { Ed25519Keypair } from '@mysten/sui/keypairs/ed25519';
 import { Transaction } from '@mysten/sui/transactions';
 import { TradeConfig, WatchItem } from './config.js';
+import { formatPair } from './formatters.js';
 
 const SUI_MIST_PER_SUI = 1_000_000_000n;
 const TRADE_PERCENT_SCALE = 10_000;
@@ -302,6 +303,7 @@ export async function executeTrade(
   const outputCoin = side === 'buy' ? item.baseToken : item.quoteToken!;
 
   if (!tradeConfig.enabled) {
+    console.log(`[Trade] Skip ${formatPair(inputCoin, outputCoin)}: trade disabled`);
     return {
       success: false,
       skipped: true,
@@ -327,6 +329,7 @@ export async function executeTrade(
   let tradableAmount = calculateAmountByPercent(cycleBaseAmount, tradeConfig);
 
   if (options?.lockedCycleAvailableAmount && tradableAmount > currentTradableAmount) {
+    console.log(`[Trade] Skip ${formatPair(inputCoin, outputCoin)}: insufficient tradable balance for locked cycle amount`);
     return {
       success: false,
       skipped: true,
@@ -339,6 +342,7 @@ export async function executeTrade(
   }
 
   if (tradableAmount <= 0n) {
+    console.log(`[Trade] Skip ${formatPair(inputCoin, outputCoin)}: insufficient tradable balance`);
     return {
       success: false,
       skipped: true,
@@ -357,6 +361,7 @@ export async function executeTrade(
   });
 
   if (!route || route.insufficientLiquidity || route.amountOut.toString() === '0') {
+    console.log(`[Trade] Skip ${formatPair(inputCoin, outputCoin)}: no executable route (insufficientLiquidity=${route?.insufficientLiquidity})`);
     return {
       success: false,
       skipped: true,
@@ -377,6 +382,10 @@ export async function executeTrade(
 
   const execution = await context.aggregator.sendTransaction(txb, context.keypair);
   const digest = extractDigest(execution);
+  
+  if (digest) {
+    console.log(`[Trade] Submitted ${formatPair(inputCoin, outputCoin)} ${side.toUpperCase()} tx=${digest}`);
+  }
   let amountOut: string | undefined;
   let realizedPrice: number | undefined;
 
@@ -393,7 +402,7 @@ export async function executeTrade(
       realizedPrice = executionMetrics.realizedPrice;
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : String(error);
-      console.warn(`[Trade] Unable to fetch execution metrics for ${digest}: ${message}`);
+      console.warn(`[Trade] Unable to fetch metrics for ${formatPair(inputCoin, outputCoin)} tx=${digest}: ${message}`);
     }
   }
 

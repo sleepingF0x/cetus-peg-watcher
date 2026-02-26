@@ -137,7 +137,7 @@ export async function startWatcher(config: Config) {
             .join(', ');
 
           console.log(
-            `[Monitor] ${group.baseToken} | quote: ${group.quoteToken} | current: $${price.toFixed(6)} | windows: ${averageText} | samples: ${history.length} | rules: ${group.items.length}`,
+            `[Monitor] ${formatPair(group.baseToken, group.quoteToken)} | current: $${price.toFixed(6)} | windows: ${averageText} | samples: ${history.length} | rules: ${group.items.length}`,
           );
 
           for (const groupedItem of group.items) {
@@ -179,7 +179,7 @@ export async function startWatcher(config: Config) {
                 ? item.targetPrice!
                 : averageTargetPrice!;
               console.log(
-                `[Trigger] ${item.baseToken} hit condition=${item.condition} mode=${item.alertMode} | current=$${price.toFixed(6)} | threshold=$${triggerThreshold.toFixed(6)}`,
+                `[Trigger] ${formatPair(item.baseToken, item.quoteToken!)} hit condition=${item.condition} mode=${item.alertMode} | current=$${price.toFixed(6)} | threshold=$${triggerThreshold.toFixed(6)}`,
               );
             }
 
@@ -207,7 +207,7 @@ export async function startWatcher(config: Config) {
                 : averageTargetPrice;
 
               if (triggerThreshold === null) {
-                console.warn(`[Trade] Skip ${tradeSide.toUpperCase()} for ${item.baseToken}: missing trigger threshold`);
+                console.warn(`[Trade] Skip ${tradeSide.toUpperCase()} for ${formatPair(item.baseToken, item.quoteToken!)}: missing trigger threshold`);
 
                 const alertMessage = [
                   '<b>⚠️ 交易配置错误</b>',
@@ -225,7 +225,7 @@ export async function startWatcher(config: Config) {
               if (!lockedCycleAvailableAmount) {
                 const currentTradableAmount = await getCurrentTradableAmount(config.trade, item, tradeSide);
                 if (currentTradableAmount <= 0n) {
-                  console.warn(`[Trade] Skip ${tradeSide.toUpperCase()} for ${item.baseToken}: insufficient tradable balance`);
+                  console.warn(`[Trade] Skip ${tradeSide.toUpperCase()} for ${formatPair(item.baseToken, item.quoteToken!)}: insufficient tradable balance`);
 
                   const alertMessage = [
                     '<b>⚠️ 交易余额不足</b>',
@@ -243,7 +243,7 @@ export async function startWatcher(config: Config) {
 
               if (hitCount < requiredConfirmations) {
                 console.log(
-                  `[Trade] Waiting confirmation ${hitCount}/${requiredConfirmations} for ${item.baseToken} (${tradeSide})`,
+                  `[Trade] Waiting confirmation ${hitCount}/${requiredConfirmations} for ${formatPair(item.baseToken, item.quoteToken!)} (${tradeSide})`,
                 );
                 continue;
               }
@@ -262,7 +262,7 @@ export async function startWatcher(config: Config) {
 
             if (isAlertConfirmed && shouldAlert(item.baseToken, item.alertCooldownSeconds || 1800, state)) {
               console.log(
-                `[Alert] Triggered for ${item.baseToken} at $${price.toFixed(6)} (cooldown=${item.alertCooldownSeconds || 1800}s)`,
+                `[Alert] Triggered for ${formatPair(item.baseToken, item.quoteToken!)} at $${price.toFixed(6)} (cooldown=${item.alertCooldownSeconds || 1800}s)`,
               );
 
               // Execute trade if enabled (before sending alert, so we can include trade info)
@@ -292,10 +292,13 @@ export async function startWatcher(config: Config) {
                             digest: tradeResult.digest,
                           };
                           recordAlert(tradeCooldownKey!, state);
+                          console.log(
+                            `[Trade] Executed ${tradeSide.toUpperCase()} for ${formatPair(item.baseToken, item.quoteToken!)} | digest=${tradeResult.digest}`,
+                          );
                         }
                       } catch (e) {
                         const err = e as Error;
-                        console.error(`[Trade] Execution failed for ${item.baseToken}: ${err.message}`);
+                        console.error(`[Trade] Execution failed for ${formatPair(item.baseToken, item.quoteToken!)}: ${err.message}`);
                       }
                     }
                   }
@@ -351,7 +354,7 @@ export async function startWatcher(config: Config) {
               const telegramSent = await sendTelegramMessage(config.telegram, telegramMessage);
               
               if (telegramSent) {
-                console.log(`[Telegram] Combined alert message sent for ${item.baseToken}`);
+                console.log(`[Telegram] Alert sent for ${formatPair(item.baseToken, item.quoteToken!)}`);
                 recordAlert(item.baseToken, state);
 
                 if (item.alertMode === 'avg_percent' && avgWindowPrice !== null) {
@@ -370,11 +373,11 @@ export async function startWatcher(config: Config) {
 
                 saveState(STATE_FILE, state);
               } else {
-                console.error(`[Telegram] Alert message failed for ${item.baseToken}`);
+                console.error(`[Telegram] Alert failed for ${formatPair(item.baseToken, item.quoteToken!)}`);
               }
             } else if (isAlertConfirmed) {
               console.log(
-                `[Alert] Cooldown active for ${item.baseToken}, skip for ${item.alertCooldownSeconds || 1800}s window`,
+                `[Alert] Cooldown active for ${formatPair(item.baseToken, item.quoteToken!)}, skip for ${item.alertCooldownSeconds || 1800}s window`,
               );
             }
           }
@@ -385,10 +388,10 @@ export async function startWatcher(config: Config) {
           }
           priceHistory.set(group.groupKey, history);
         } else {
-          console.error(`[Watcher] Failed to fetch price for ${group.baseToken}`);
+          console.error(`[Watcher] Failed to fetch price for ${formatPair(group.baseToken, group.quoteToken)}`);
         }
       } catch (error: any) {
-        console.error(`[Watcher] Error in polling loop for ${group.baseToken}: ${error.message}`);
+        console.error(`[Watcher] Error in polling loop for ${formatPair(group.baseToken, group.quoteToken)}: ${error.message}`);
       }
     };
 
