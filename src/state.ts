@@ -4,6 +4,12 @@ export interface AlertState {
   lastAlertTime: Record<string, number>;
 }
 
+interface StateMigrationItem {
+  id: string;
+  baseToken: string;
+  quoteToken: string;
+}
+
 export function loadState(filePath: string): AlertState {
   if (!fs.existsSync(filePath) || !fs.statSync(filePath).isFile()) {
     return { lastAlertTime: {} };
@@ -29,6 +35,53 @@ export function saveState(filePath: string, state: AlertState): void {
     console.error(`Error saving state to ${filePath}:`, error);
     throw error;
   }
+}
+
+export function migrateLegacyStateKeys(
+  state: AlertState,
+  items: StateMigrationItem[],
+): AlertState {
+  const migratedState: AlertState = {
+    lastAlertTime: { ...state.lastAlertTime },
+  };
+  const migratedKeys = new Set<string>();
+
+  items.forEach((item, index) => {
+    const explicitRuleKey = `rule::${item.id}`;
+    const legacyBaseTokenKey = item.baseToken;
+    const legacyIndexedRuleKey = `${item.baseToken}::${item.quoteToken}::alert::${index}`;
+
+    if (
+      migratedState.lastAlertTime[explicitRuleKey] === undefined &&
+      migratedState.lastAlertTime[legacyBaseTokenKey] !== undefined
+    ) {
+      migratedState.lastAlertTime[explicitRuleKey] = migratedState.lastAlertTime[legacyBaseTokenKey];
+      migratedKeys.add(legacyBaseTokenKey);
+    }
+
+    if (
+      migratedState.lastAlertTime[explicitRuleKey] === undefined &&
+      migratedState.lastAlertTime[legacyIndexedRuleKey] !== undefined
+    ) {
+      migratedState.lastAlertTime[explicitRuleKey] = migratedState.lastAlertTime[legacyIndexedRuleKey];
+      migratedKeys.add(legacyIndexedRuleKey);
+    }
+
+    for (const [key, value] of Object.entries(migratedState.lastAlertTime)) {
+      const opsPrefix = `${legacyIndexedRuleKey}::ops::`;
+      if (key.startsWith(opsPrefix)) {
+        const issueType = key.slice(opsPrefix.length);
+        migratedState.lastAlertTime[`${explicitRuleKey}::ops::${issueType}`] = value;
+        migratedKeys.add(key);
+      }
+    }
+  });
+
+  for (const key of migratedKeys) {
+    delete migratedState.lastAlertTime[key];
+  }
+
+  return migratedState;
 }
 
 export function shouldAlert(tokenId: string, cooldownSeconds: number, state: AlertState): boolean {

@@ -8,7 +8,7 @@ Sui 区块链代币价格监控与自动交易工具。基于 Cetus DEX Aggregat
 - **双模式触发**：
   - 固定价格模式：`targetPrice` 绝对阈值
   - 均价百分比模式：`avgWindowMinutes` 内均价 × `avgTargetPercent`%
-- **Telegram 通知**：价格预警与交易结果统一推送
+- **Telegram 分层通知**：价格信号与运维告警分层推送
 - **自动交易**（可选）：满足条件时自动执行买卖（需配置助记词）
 - **智能冷却**：预警和交易分别冷却，防止重复触发
 - **状态持久化**：重启后保留冷却状态
@@ -50,14 +50,17 @@ npm start
 
 | 字段 | 类型 | 必填 | 默认值 | 说明 |
 |------|------|------|--------|------|
-| `barkUrl` | string | - | - | 兼容旧配置字段，当前不用于发送通知 |
 | `telegram` | object | - | - | Telegram Bot 通知配置（见下方） |
 | `trade` | object | - | - | 交易配置（见下方） |
 | `items` | array | ✅ | - | 监控项数组，至少 1 个 |
 
-`barkUrl` 仅保留兼容；通知统一使用 Telegram。
-
 ### Telegram 配置 (`telegram`)
+
+Telegram 目前分为 3 类事件：
+
+- `signal`：价格告警、交易成功
+- `ops`：配置错误、余额不足、交易失败
+- `silent`：轮询、冷却命中、等待确认、暂停/恢复等，仅写日志
 
 | 字段 | 类型 | 必填 | 默认值 | 说明 |
 |------|------|------|--------|------|
@@ -82,6 +85,7 @@ npm start
 
 | 字段 | 类型 | 必填 | 默认值 | 说明 |
 |------|------|------|--------|------|
+| `id` | string | ✅ | - | 规则唯一标识，必须全局唯一，冷却状态持久化依赖此字段 |
 | `baseToken` | string | ✅ | - | 要监控的代币地址，如 `0x2::sui::SUI` |
 | `targetPrice` | number | ⚠️ | - | 固定价格模式的目标价格（与 avgTargetPercent 二选一） |
 | `avgTargetPercent` | number | ⚠️ | - | 均价百分比模式，如 103 表示均价的 103%（与 targetPrice 二选一） |
@@ -96,7 +100,9 @@ npm start
 | `alertMode` | string | - | 自动推断 | 触发模式：`price` 或 `avg_percent`，不填时根据 targetPrice/avgTargetPercent 自动推断 |
 | `tradeEnabled` | boolean | - | `true` | 该币种是否允许自动交易 |
 
-**⚠️ 重要规则**：`targetPrice` 和 `avgTargetPercent` 必须**且只能配置一个**，否则启动时报错。
+**⚠️ 重要规则**：
+- `id` 必须填写且在所有监控项中唯一
+- `targetPrice` 和 `avgTargetPercent` 必须**且只能配置一个**，否则启动时报错。
 
 ---
 
@@ -136,12 +142,14 @@ npm start
 
 ### 4. 冷却机制
 
-- 预警冷却：按 `baseToken` 维度记录
+- 预警冷却：按单条监控规则维度记录
+- 规则身份：由 `items[].id` 决定，不受配置顺序影响
 - 交易冷却：按 `baseToken + quoteToken + side` 维度记录（买入和卖出分别冷却）
+- 运维告警冷却：按 `rule + issue type` 维度记录，默认 3600 秒
 
 ### 5. 均价采样暂停与恢复（仅 `avg_percent`）
 
-- 触发并成功发送预警后，暂停将新价格写入均价窗口
+- 触发并成功发送预警后，该规则会暂停重复触发，同时暂停将新价格写入均价窗口
 - 恢复阈值基于 `avgTargetPercent` 和 `avgResumeFactor` 计算
 - 偏离量：`deviation = abs(avgTargetPercent - 100) / 100`
 - 恢复偏离：`recoverDeviation = deviation * avgResumeFactor`
@@ -170,10 +178,9 @@ npm start
    - 使用助记词签名并广播到链上
 
 4. **结果处理**
-   - 成功：发送 Telegram 通知（含交易哈希）
+   - 成功：发送 `signal` 类 Telegram 通知（含交易哈希）
    - 成功：基于交易哈希回查链上 balanceChanges，提取 `amountIn/amountOut` 并计算 `realized` 成交价
-   - 成功：如启用 Telegram，则额外发送交易消息到 Bot
-   - 失败：记录日志，不发送通知
+   - 失败：记录日志，并按冷却规则发送 `ops` 类 Telegram 运维告警
 
 ---
 
@@ -183,7 +190,6 @@ npm start
 
 ```json
 {
-  "barkUrl": "",
   "telegram": {
     "enabled": false,
     "botToken": "123456789:YOUR_BOT_TOKEN",
@@ -191,6 +197,7 @@ npm start
   },
   "items": [
     {
+      "id": "sui-above-avg-103",
       "baseToken": "0x2::sui::SUI",
       "alertMode": "avg_percent",
       "condition": "above",
@@ -211,7 +218,6 @@ npm start
 
 ```json
 {
-  "barkUrl": "",
   "telegram": {
     "enabled": true,
     "botToken": "123456789:YOUR_BOT_TOKEN",
@@ -228,6 +234,7 @@ npm start
   },
   "items": [
     {
+      "id": "sui-above-avg-103",
       "baseToken": "0x2::sui::SUI",
       "alertMode": "avg_percent",
       "condition": "above",

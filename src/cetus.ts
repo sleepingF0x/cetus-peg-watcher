@@ -1,4 +1,5 @@
 import axios from 'axios';
+import { getCoinDecimals } from './coin-metadata.js';
 
 export interface CetusQuoteResponse {
   code: number;
@@ -18,36 +19,8 @@ const DEFAULT_QUERY_AMOUNT_KEY = 'AUTO_1_BASE_TOKEN';
 async function delay(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
-
-const SUI_RPC_URL = 'https://fullnode.mainnet.sui.io:443';
-
-const decimalsCache = new Map<string, number>();
 const priceCache = new Map<string, { value: number | null; expiresAt: number }>();
 const inFlightPriceRequests = new Map<string, Promise<number | null>>();
-
-export async function getCoinDecimals(coinType: string): Promise<number | null> {
-  const cached = decimalsCache.get(coinType);
-  if (cached !== undefined) return cached;
-
-  try {
-    const response = await axios.post(SUI_RPC_URL, {
-      jsonrpc: '2.0',
-      id: 1,
-      method: 'suix_getCoinMetadata',
-      params: [coinType],
-    }, {
-      timeout: 15000,
-    });
-
-    if (response.data?.result?.decimals !== undefined) {
-      decimalsCache.set(coinType, response.data.result.decimals);
-      return response.data.result.decimals;
-    }
-  } catch (error: any) {
-    console.error(`Error fetching metadata for ${coinType}: ${error.message}`);
-  }
-  return null;
-}
 
 export async function getTokenPrice(
   baseToken: string,

@@ -6,6 +6,7 @@ import { SuiClient } from '@mysten/sui/client';
 import { Ed25519Keypair } from '@mysten/sui/keypairs/ed25519';
 import { Transaction } from '@mysten/sui/transactions';
 import { TradeConfig, WatchItem } from './config.js';
+import { getCoinDecimals } from './coin-metadata.js';
 import { formatPair } from './formatters.js';
 
 const SUI_MIST_PER_SUI = 1_000_000_000n;
@@ -25,6 +26,8 @@ export interface TradeExecutionResult {
   amountOut?: string;
   realizedPrice?: number;
   digest?: string;
+  inputDecimals?: number;
+  outputDecimals?: number;
 }
 
 interface ExecuteTradeOptions {
@@ -40,7 +43,6 @@ interface TraderContext {
 
 let cachedContextKey = '';
 let cachedContext: TraderContext | null = null;
-const decimalsCache = new Map<string, number>();
 
 interface BalanceChange {
   owner?: {
@@ -150,41 +152,13 @@ function sumCoinAmountForOwner(
   return total;
 }
 
-async function getCoinDecimals(rpcUrl: string, coinType: string): Promise<number | null> {
-  const cached = decimalsCache.get(coinType);
-  if (cached !== undefined) {
-    return cached;
-  }
-
-  try {
-    const response = await axios.post<RpcResponse<{ decimals?: number }>>(rpcUrl, {
-      jsonrpc: '2.0',
-      id: 1,
-      method: 'suix_getCoinMetadata',
-      params: [coinType],
-    }, {
-      timeout: 15000,
-    });
-
-    const decimals = response.data.result?.decimals;
-    if (typeof decimals === 'number') {
-      decimalsCache.set(coinType, decimals);
-      return decimals;
-    }
-  } catch {
-    return null;
-  }
-
-  return null;
-}
-
 async function getExecutionMetrics(
   rpcUrl: string,
   digest: string,
   ownerAddress: string,
   inputCoin: string,
   outputCoin: string,
-): Promise<{ amountOut?: string; realizedPrice?: number }> {
+): Promise<{ amountOut?: string; realizedPrice?: number; inputDecimals?: number; outputDecimals?: number }> {
   const response = await axios.post<RpcResponse<TransactionBlockResult>>(rpcUrl, {
     jsonrpc: '2.0',
     id: 1,
@@ -210,8 +184,8 @@ async function getExecutionMetrics(
   }
 
   const [inputDecimals, outputDecimals] = await Promise.all([
-    getCoinDecimals(rpcUrl, inputCoin),
-    getCoinDecimals(rpcUrl, outputCoin),
+    getCoinDecimals(inputCoin, rpcUrl),
+    getCoinDecimals(outputCoin, rpcUrl),
   ]);
 
   if (inputDecimals === null || outputDecimals === null) {
@@ -226,6 +200,8 @@ async function getExecutionMetrics(
   return {
     amountOut: actualOutput.toString(),
     realizedPrice,
+    inputDecimals,
+    outputDecimals,
   };
 }
 
@@ -388,6 +364,8 @@ export async function executeTrade(
   }
   let amountOut: string | undefined;
   let realizedPrice: number | undefined;
+  let inputDecimals: number | undefined;
+  let outputDecimals: number | undefined;
 
   if (digest) {
     try {
@@ -400,6 +378,8 @@ export async function executeTrade(
       );
       amountOut = executionMetrics.amountOut;
       realizedPrice = executionMetrics.realizedPrice;
+      inputDecimals = executionMetrics.inputDecimals;
+      outputDecimals = executionMetrics.outputDecimals;
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : String(error);
       console.warn(`[Trade] Unable to fetch metrics for ${formatPair(inputCoin, outputCoin)} tx=${digest}: ${message}`);
@@ -417,5 +397,7 @@ export async function executeTrade(
     amountOut,
     realizedPrice,
     digest,
+    inputDecimals,
+    outputDecimals,
   };
 }

@@ -1,6 +1,7 @@
 import fs from 'fs';
 
 export interface WatchItem {
+  id: string;
   baseToken: string;
   targetPrice?: number;
   condition: 'above' | 'below';
@@ -35,7 +36,6 @@ export interface TelegramConfig {
 }
 
 export interface Config {
-  barkUrl?: string;
   items: WatchItem[];
   trade?: TradeConfig;
   telegram?: TelegramConfig;
@@ -107,6 +107,9 @@ export function loadConfig(filePath: string): Config {
   }
 
   config.items = config.items.map((item, index) => {
+    if (!item.id || typeof item.id !== 'string') {
+      throw new Error(`item[${index}].id is required`);
+    }
     if (!item.baseToken) {
       throw new Error(`item[${index}].baseToken is required`);
     }
@@ -168,6 +171,14 @@ export function loadConfig(filePath: string): Config {
         : undefined,
     };
   });
+
+  const itemIds = new Set<string>();
+  for (const item of config.items) {
+    if (itemIds.has(item.id)) {
+      throw new Error(`item ids must be unique: ${item.id}`);
+    }
+    itemIds.add(item.id);
+  }
 
   config.trade = {
     ...tradeConfig,

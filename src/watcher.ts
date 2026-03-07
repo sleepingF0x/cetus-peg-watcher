@@ -1,31 +1,29 @@
 import { Config } from './config.js';
-import { getTokenPrice, getCoinDecimals } from './cetus.js';
-import { loadState, saveState, shouldAlert, recordAlert } from './state.js';
+import { getTokenPrice } from './cetus.js';
+import { loadState, migrateLegacyStateKeys, saveState, shouldAlert, recordAlert } from './state.js';
 import { executeTrade, getCurrentTradableAmount } from './trader.js';
 import { sendTelegramMessage } from './telegram.js';
+import { formatPair } from './formatters.js';
 import {
-  getTokenSymbol,
-  formatPair,
-  formatAmount,
-  formatPrice,
-  calculateExecutedPrice,
-} from './formatters.js';
+  createAlertRuleKey,
+  createOpsCooldownKey,
+  createSerializedPollRunner,
+} from './watcher-logic.js';
+import type { AveragePauseRule } from './watcher-logic.js';
+import { createAveragePauseRule, evaluateWatchRule } from './watcher-rules.js';
+import { buildOpsAlertMessage, processAlertActions } from './watcher-actions.js';
 
 const STATE_FILE = 'state.json';
+const DEFAULT_OPS_COOLDOWN_SECONDS = 3600;
 
 interface PricePoint {
   timestamp: number;
   price: number;
 }
 
-interface AveragePauseRule {
-  resumePrice: number;
-  condition: 'above' | 'below';
-}
-
 interface GroupedWatchItem {
   item: Config['items'][number];
-  itemId: string;
+  ruleKey: string;
   averageWindowMs: number;
 }
 
@@ -36,14 +34,6 @@ interface WatchGroup {
   pollIntervalMs: number;
   maxAverageWindowMs: number;
   items: GroupedWatchItem[];
-}
-
-interface TradeExecutionSummary {
-  side: string;
-  amountIn?: string;
-  amountOut?: string;
-  realizedPrice?: number;
-  digest?: string;
 }
 
 function pruneOldPrices(history: PricePoint[], now: number, windowMs: number): void {
@@ -74,23 +64,55 @@ function calculateAveragePriceWithinWindow(history: PricePoint[], now: number, w
 }
 
 export async function startWatcher(config: Config) {
-  const state = loadState(STATE_FILE);
+  const loadedState = loadState(STATE_FILE);
+  const state = migrateLegacyStateKeys(loadedState, config.items.map((item) => ({
+    id: item.id,
+    baseToken: item.baseToken,
+    quoteToken: item.quoteToken!,
+  })));
+  if (JSON.stringify(state.lastAlertTime) !== JSON.stringify(loadedState.lastAlertTime)) {
+    console.log('[State] Migrated legacy cooldown keys to explicit rule ids');
+    saveState(STATE_FILE, state);
+  }
   const priceHistory = new Map<string, PricePoint[]>();
   const averagePauseRules = new Map<string, AveragePauseRule>();
   const tradeCycleBaseAvailable = new Map<string, string>();
   const consecutiveTradeHits = new Map<string, number>();
   const watchGroups = new Map<string, WatchGroup>();
 
+  const maybeSendOpsAlert = async (
+    ruleKey: string,
+    issueType: string,
+    message: string,
+  ): Promise<boolean> => {
+    const opsCooldownKey = createOpsCooldownKey(ruleKey, issueType);
+    if (!shouldAlert(opsCooldownKey, DEFAULT_OPS_COOLDOWN_SECONDS, state)) {
+      console.log(`[Ops] Cooldown active for ${issueType} (${ruleKey}), skip for ${DEFAULT_OPS_COOLDOWN_SECONDS}s window`);
+      return false;
+    }
+
+    const sent = await sendTelegramMessage(config.telegram, message);
+    if (sent) {
+      console.log(`[Ops] Alert sent for ${issueType} (${ruleKey})`);
+      recordAlert(opsCooldownKey, state);
+      saveState(STATE_FILE, state);
+    } else {
+      console.error(`[Ops] Alert failed for ${issueType} (${ruleKey})`);
+    }
+
+    return sent;
+  };
+
   config.items.forEach((item, index) => {
     const pollIntervalMs = (item.pollInterval || 30) * 1000;
     const pairKey = `${item.baseToken}::${item.quoteToken}`;
     const groupKey = `${pairKey}::${pollIntervalMs}`;
     const averageWindowMs = (item.avgWindowMinutes || 10) * 60 * 1000;
-    const itemId = `${groupKey}::${index}`;
+    const ruleKey = createAlertRuleKey(item.id);
 
     const existingGroup = watchGroups.get(groupKey);
     if (existingGroup) {
-      existingGroup.items.push({ item, itemId, averageWindowMs });
+      existingGroup.items.push({ item, ruleKey, averageWindowMs });
       if (averageWindowMs > existingGroup.maxAverageWindowMs) {
         existingGroup.maxAverageWindowMs = averageWindowMs;
       }
@@ -103,299 +125,223 @@ export async function startWatcher(config: Config) {
       quoteToken: item.quoteToken!,
       pollIntervalMs,
       maxAverageWindowMs: averageWindowMs,
-      items: [{ item, itemId, averageWindowMs }],
+      items: [{ item, ruleKey, averageWindowMs }],
     });
   });
 
   for (const group of watchGroups.values()) {
-
-    const check = async () => {
+    const check = createSerializedPollRunner(async () => {
       try {
         const price = await getTokenPrice(group.baseToken, group.quoteToken);
 
-        if (price !== null) {
-          const now = Date.now();
-          const history = priceHistory.get(group.groupKey) ?? [];
-
-          pruneOldPrices(history, now, group.maxAverageWindowMs);
-
-          const windowSummary = new Map<number, number | null>();
-          for (const groupedItem of group.items) {
-            if (!windowSummary.has(groupedItem.averageWindowMs)) {
-              windowSummary.set(
-                groupedItem.averageWindowMs,
-                calculateAveragePriceWithinWindow(history, now, groupedItem.averageWindowMs),
-              );
-            }
-          }
-
-          const averageText = Array.from(windowSummary.entries())
-            .map(([windowMs, avg]) => {
-              const minutes = Math.round(windowMs / 60000);
-              return `${minutes}m=${avg === null ? 'N/A' : `$${avg.toFixed(6)}`}`;
-            })
-            .join(', ');
-
-          console.log(
-            `[Monitor] ${formatPair(group.baseToken, group.quoteToken)} | current: $${price.toFixed(6)} | windows: ${averageText} | samples: ${history.length} | rules: ${group.items.length}`,
-          );
-
-          for (const groupedItem of group.items) {
-            const { item, itemId, averageWindowMs } = groupedItem;
-            const pauseRule = averagePauseRules.get(itemId);
-
-            if (pauseRule) {
-              const shouldResume = pauseRule.condition === 'above'
-                ? price <= pauseRule.resumePrice
-                : price >= pauseRule.resumePrice;
-
-              if (shouldResume) {
-                averagePauseRules.delete(itemId);
-              }
-            }
-
-            const avgWindowPrice = windowSummary.get(averageWindowMs) ?? null;
-
-            const isTargetConditionMet = item.alertMode === 'price' && (
-              (item.condition === 'above' && price >= item.targetPrice!) ||
-              (item.condition === 'below' && price <= item.targetPrice!)
-            );
-
-            const averageTargetPrice = avgWindowPrice === null
-              ? null
-              : avgWindowPrice * ((item.avgTargetPercent || 100) / 100);
-
-            const isAverageConditionMet = item.alertMode === 'avg_percent' && averageTargetPrice !== null && (
-              (item.condition === 'above' && price >= averageTargetPrice) ||
-              (item.condition === 'below' && price <= averageTargetPrice)
-            );
-
-            const isConditionMet = item.alertMode === 'price'
-              ? isTargetConditionMet
-              : isAverageConditionMet;
-
-            if (isConditionMet) {
-              const triggerThreshold = item.alertMode === 'price'
-                ? item.targetPrice!
-                : averageTargetPrice!;
-              console.log(
-                `[Trigger] ${formatPair(item.baseToken, item.quoteToken!)} hit condition=${item.condition} mode=${item.alertMode} | current=$${price.toFixed(6)} | threshold=$${triggerThreshold.toFixed(6)}`,
-              );
-            }
-
-            const tradeSide = isConditionMet
-              ? (item.condition === 'below' ? 'buy' : 'sell')
-              : null;
-
-            const hitCount = isConditionMet
-              ? (consecutiveTradeHits.get(itemId) ?? 0) + 1
-              : 0;
-            if (isConditionMet) {
-              consecutiveTradeHits.set(itemId, hitCount);
-            } else {
-              consecutiveTradeHits.delete(itemId);
-            }
-
-            const tradeCooldownKey = tradeSide !== null 
-                ? `${item.baseToken}::${item.quoteToken}::${tradeSide}::trade`
-                : null;
-
-            if (config.trade?.enabled && item.tradeEnabled && tradeSide !== null) {
-              const requiredConfirmations = item.tradeConfirmations || 2;
-              const triggerThreshold = item.alertMode === 'price'
-                ? item.targetPrice!
-                : averageTargetPrice;
-
-              if (triggerThreshold === null) {
-                console.warn(`[Trade] Skip ${tradeSide.toUpperCase()} for ${formatPair(item.baseToken, item.quoteToken!)}: missing trigger threshold`);
-
-                const alertMessage = [
-                  '<b>⚠️ 交易配置错误</b>',
-                  `Token: <code>${item.baseToken}</code>`,
-                  `Side: <code>${tradeSide.toUpperCase()}</code>`,
-                  `原因: 缺少触发阈值配置`,
-                ].join('\n');
-                await sendTelegramMessage(config.telegram, alertMessage).catch(() => {});
-
-                continue;
-              }
-              let lockedCycleAvailableAmount: string | undefined;
-
-              lockedCycleAvailableAmount = tradeCycleBaseAvailable.get(tradeCooldownKey!);
-              if (!lockedCycleAvailableAmount) {
-                const currentTradableAmount = await getCurrentTradableAmount(config.trade, item, tradeSide);
-                if (currentTradableAmount <= 0n) {
-                  console.warn(`[Trade] Skip ${tradeSide.toUpperCase()} for ${formatPair(item.baseToken, item.quoteToken!)}: insufficient tradable balance`);
-
-                  const alertMessage = [
-                    '<b>⚠️ 交易余额不足</b>',
-                    `Pair: <code>${item.baseToken}</code> / <code>${item.quoteToken}</code>`,
-                    `Side: <code>${tradeSide.toUpperCase()}</code>`,
-                    `原因: 钱包中可用于交易的余额不足`,
-                  ].join('\n');
-                  await sendTelegramMessage(config.telegram, alertMessage).catch(() => {});
-
-                  continue;
-                }
-                lockedCycleAvailableAmount = currentTradableAmount.toString();
-                tradeCycleBaseAvailable.set(tradeCooldownKey!, lockedCycleAvailableAmount);
-              }
-
-              if (hitCount < requiredConfirmations) {
-                console.log(
-                  `[Trade] Waiting confirmation ${hitCount}/${requiredConfirmations} for ${formatPair(item.baseToken, item.quoteToken!)} (${tradeSide})`,
-                );
-                continue;
-              }
-
-              // Trade execution moved to alert section for combined messaging
-            }
-
-            if (!isConditionMet) {
-              tradeCycleBaseAvailable.delete(`${item.baseToken}::${item.quoteToken}::buy::trade`);
-              tradeCycleBaseAvailable.delete(`${item.baseToken}::${item.quoteToken}::sell::trade`);
-            }
-
-            const requiredConfirmations = item.tradeConfirmations || 2;
-            const isAlertConfirmed = isConditionMet && hitCount >= requiredConfirmations;
-            let tradeExecutionResult: TradeExecutionSummary | null = null;
-
-            if (isAlertConfirmed && shouldAlert(item.baseToken, item.alertCooldownSeconds || 1800, state)) {
-              console.log(
-                `[Alert] Triggered for ${formatPair(item.baseToken, item.quoteToken!)} at $${price.toFixed(6)} (cooldown=${item.alertCooldownSeconds || 1800}s)`,
-              );
-
-              // Execute trade if enabled (before sending alert, so we can include trade info)
-              if (config.trade?.enabled && item.tradeEnabled && tradeSide !== null) {
-                const triggerThreshold = item.alertMode === 'price'
-                  ? item.targetPrice!
-                  : averageTargetPrice;
-
-                if (triggerThreshold !== null && shouldAlert(tradeCooldownKey!, item.tradeCooldownSeconds || 1800, state)) {
-                  const requotedPrice = await getTokenPrice(group.baseToken, group.quoteToken, undefined, { forceRefresh: true });
-                  if (requotedPrice !== null) {
-                    const stillValid = item.condition === 'above'
-                      ? requotedPrice >= triggerThreshold
-                      : requotedPrice <= triggerThreshold;
-                    
-                    if (stillValid) {
-                      try {
-                        const tradeResult = await executeTrade(config.trade, item, tradeSide, {
-                          lockedCycleAvailableAmount: tradeCycleBaseAvailable.get(tradeCooldownKey!),
-                        });
-                        if (tradeResult.success) {
-                          tradeExecutionResult = {
-                            side: tradeSide,
-                            amountIn: tradeResult.amountIn,
-                            amountOut: tradeResult.amountOut,
-                            realizedPrice: tradeResult.realizedPrice,
-                            digest: tradeResult.digest,
-                          };
-                          recordAlert(tradeCooldownKey!, state);
-                          console.log(
-                            `[Trade] Executed ${tradeSide.toUpperCase()} for ${formatPair(item.baseToken, item.quoteToken!)} | digest=${tradeResult.digest}`,
-                          );
-                        }
-                      } catch (e) {
-                        const err = e as Error;
-                        console.error(`[Trade] Execution failed for ${formatPair(item.baseToken, item.quoteToken!)}: ${err.message}`);
-                      }
-                    }
-                  }
-                }
-              }
-
-              // Build combined message
-              const targetPrice = item.targetPrice;
-              const reason = item.alertMode === 'price'
-                ? `target: ${item.condition} $${targetPrice!.toFixed(4)}`
-                : `${item.avgWindowMinutes}m avg x ${item.avgTargetPercent}%: ${item.condition} $${averageTargetPrice!.toFixed(4)}`;
-              
-              const pairSymbol = formatPair(item.baseToken, item.quoteToken!);
-              const baseSymbol = getTokenSymbol(item.baseToken);
-              const quoteSymbol = getTokenSymbol(item.quoteToken!);
-
-              let messageLines: string[] = [];
-              
-              if (tradeExecutionResult) {
-                messageLines.push(`🚨 <b>Price Alert + Trade Executed</b>`);
-              } else {
-                messageLines.push(`🚨 <b>Price Alert</b>`);
-              }
-              
-              messageLines.push(`Pair: <code>${pairSymbol}</code>`);
-              messageLines.push(`Trigger: <code>${reason}</code>`);
-              messageLines.push(`Current: <code>$${price.toFixed(6)}</code>`);
-
-              if (tradeExecutionResult) {
-                const [baseDecimals, quoteDecimals] = await Promise.all([
-                  getCoinDecimals(item.baseToken),
-                  getCoinDecimals(item.quoteToken!),
-                ]);
-                
-                const amountInFormatted = formatAmount(tradeExecutionResult.amountIn, baseDecimals ?? 6, 4);
-                const amountOutFormatted = formatAmount(tradeExecutionResult.amountOut, quoteDecimals ?? 6, 4);
-                const execPrice = calculateExecutedPrice(
-                  tradeExecutionResult.amountIn,
-                  tradeExecutionResult.amountOut,
-                  baseDecimals ?? 6,
-                  quoteDecimals ?? 6,
-                );
-                
-                messageLines.push('');
-                messageLines.push(`Trade: <code>${tradeExecutionResult.side.toUpperCase()} ${amountInFormatted} ${baseSymbol} → ${amountOutFormatted} ${quoteSymbol}</code>`);
-                messageLines.push(`Executed Price: <code>${formatPrice(execPrice)} ${quoteSymbol}/${baseSymbol}</code>`);
-                if (tradeExecutionResult.digest) {
-                  messageLines.push(`Tx: <code>${tradeExecutionResult.digest}</code>`);
-                }
-              }
-
-              const telegramMessage = messageLines.join('\n');
-              const telegramSent = await sendTelegramMessage(config.telegram, telegramMessage);
-              
-              if (telegramSent) {
-                console.log(`[Telegram] Alert sent for ${formatPair(item.baseToken, item.quoteToken!)}`);
-                recordAlert(item.baseToken, state);
-
-                if (item.alertMode === 'avg_percent' && avgWindowPrice !== null) {
-                  const deviation = Math.abs((item.avgTargetPercent || 100) - 100) / 100;
-                  const resumeFactor = item.avgResumeFactor ?? 0.95;
-                  const recoverDeviation = deviation * resumeFactor;
-                  const resumeMultiplier = item.condition === 'above'
-                    ? 1 + deviation - recoverDeviation
-                    : 1 - deviation + recoverDeviation;
-
-                  averagePauseRules.set(itemId, {
-                    condition: item.condition,
-                    resumePrice: avgWindowPrice * resumeMultiplier,
-                  });
-                }
-
-                saveState(STATE_FILE, state);
-              } else {
-                console.error(`[Telegram] Alert failed for ${formatPair(item.baseToken, item.quoteToken!)}`);
-              }
-            } else if (isAlertConfirmed) {
-              console.log(
-                `[Alert] Cooldown active for ${formatPair(item.baseToken, item.quoteToken!)}, skip for ${item.alertCooldownSeconds || 1800}s window`,
-              );
-            }
-          }
-
-          const shouldSamplePrice = group.items.some(({ itemId }) => !averagePauseRules.has(itemId));
-          if (shouldSamplePrice) {
-            history.push({ timestamp: now, price });
-          }
-          priceHistory.set(group.groupKey, history);
-        } else {
+        if (price === null) {
           console.error(`[Watcher] Failed to fetch price for ${formatPair(group.baseToken, group.quoteToken)}`);
+          return;
         }
-      } catch (error: any) {
-        console.error(`[Watcher] Error in polling loop for ${formatPair(group.baseToken, group.quoteToken)}: ${error.message}`);
-      }
-    };
 
-    check();
-    setInterval(check, group.pollIntervalMs);
+        const now = Date.now();
+        const history = priceHistory.get(group.groupKey) ?? [];
+
+        pruneOldPrices(history, now, group.maxAverageWindowMs);
+
+        const windowSummary = new Map<number, number | null>();
+        for (const groupedItem of group.items) {
+          if (!windowSummary.has(groupedItem.averageWindowMs)) {
+            windowSummary.set(
+              groupedItem.averageWindowMs,
+              calculateAveragePriceWithinWindow(history, now, groupedItem.averageWindowMs),
+            );
+          }
+        }
+
+        const averageText = Array.from(windowSummary.entries())
+          .map(([windowMs, avg]) => {
+            const minutes = Math.round(windowMs / 60000);
+            return `${minutes}m=${avg === null ? 'N/A' : `$${avg.toFixed(6)}`}`;
+          })
+          .join(', ');
+
+        console.log(
+          `[Monitor] ${formatPair(group.baseToken, group.quoteToken)} | current: $${price.toFixed(6)} | windows: ${averageText} | samples: ${history.length} | rules: ${group.items.length}`,
+        );
+
+        for (const groupedItem of group.items) {
+          const { item, ruleKey, averageWindowMs } = groupedItem;
+          const avgWindowPrice = windowSummary.get(averageWindowMs) ?? null;
+          const evaluation = evaluateWatchRule({
+            item,
+            price,
+            avgWindowPrice,
+            previousHitCount: consecutiveTradeHits.get(ruleKey) ?? 0,
+            pauseRule: averagePauseRules.get(ruleKey),
+          });
+
+          if (evaluation.resumed) {
+            averagePauseRules.delete(ruleKey);
+          }
+
+          if (evaluation.isPaused) {
+            consecutiveTradeHits.delete(ruleKey);
+            continue;
+          }
+
+          const averageTargetPrice = item.alertMode === 'avg_percent' && avgWindowPrice !== null
+            ? avgWindowPrice * ((item.avgTargetPercent || 100) / 100)
+            : null;
+          const isConditionMet = evaluation.isConditionMet;
+          const triggerThreshold = evaluation.triggerThreshold;
+
+          if (isConditionMet) {
+            console.log(
+              `[Trigger] ${formatPair(item.baseToken, item.quoteToken!)} hit condition=${item.condition} mode=${item.alertMode} | current=$${price.toFixed(6)} | threshold=$${triggerThreshold!.toFixed(6)}`,
+            );
+          }
+
+          const tradeSide = evaluation.tradeSide;
+          const hitCount = evaluation.hitCount;
+          if (isConditionMet) {
+            consecutiveTradeHits.set(ruleKey, hitCount);
+          } else {
+            consecutiveTradeHits.delete(ruleKey);
+          }
+
+          const tradeCooldownKey = tradeSide !== null
+            ? `${item.baseToken}::${item.quoteToken}::${tradeSide}::trade`
+            : null;
+
+          if (config.trade?.enabled && item.tradeEnabled && tradeSide !== null) {
+            const requiredConfirmations = item.tradeConfirmations || 2;
+
+            if (triggerThreshold === null) {
+              console.warn(`[Trade] Skip ${tradeSide.toUpperCase()} for ${formatPair(item.baseToken, item.quoteToken!)}: missing trigger threshold`);
+
+              const opsMessage = buildOpsAlertMessage({
+                title: 'Config Error',
+                pairSymbol: formatPair(item.baseToken, item.quoteToken!),
+                details: [
+                  `Reason: missing trigger threshold`,
+                  `Side: ${tradeSide.toUpperCase()}`,
+                ],
+              });
+              await maybeSendOpsAlert(ruleKey, 'config_error', opsMessage).catch(() => {});
+
+              continue;
+            }
+
+            let lockedCycleAvailableAmount = tradeCycleBaseAvailable.get(tradeCooldownKey!);
+            if (!lockedCycleAvailableAmount) {
+              const currentTradableAmount = await getCurrentTradableAmount(config.trade, item, tradeSide);
+              if (currentTradableAmount <= 0n) {
+                console.warn(`[Trade] Skip ${tradeSide.toUpperCase()} for ${formatPair(item.baseToken, item.quoteToken!)}: insufficient tradable balance`);
+
+                const opsMessage = buildOpsAlertMessage({
+                  title: 'Insufficient Balance',
+                  pairSymbol: formatPair(item.baseToken, item.quoteToken!),
+                  details: [
+                    'Reason: insufficient tradable balance',
+                    `Side: ${tradeSide.toUpperCase()}`,
+                  ],
+                });
+                await maybeSendOpsAlert(ruleKey, 'insufficient_balance', opsMessage).catch(() => {});
+
+                continue;
+              }
+              lockedCycleAvailableAmount = currentTradableAmount.toString();
+              tradeCycleBaseAvailable.set(tradeCooldownKey!, lockedCycleAvailableAmount);
+            }
+
+            if (hitCount < requiredConfirmations) {
+              console.log(
+                `[Trade] Waiting confirmation ${hitCount}/${requiredConfirmations} for ${formatPair(item.baseToken, item.quoteToken!)} (${tradeSide})`,
+              );
+              continue;
+            }
+          }
+
+          if (!isConditionMet) {
+            tradeCycleBaseAvailable.delete(`${item.baseToken}::${item.quoteToken}::buy::trade`);
+            tradeCycleBaseAvailable.delete(`${item.baseToken}::${item.quoteToken}::sell::trade`);
+          }
+
+          const isAlertConfirmed = evaluation.isAlertConfirmed;
+
+          if (isAlertConfirmed && shouldAlert(ruleKey, item.alertCooldownSeconds || 1800, state)) {
+            console.log(
+              `[Alert] Triggered for ${formatPair(item.baseToken, item.quoteToken!)} at $${price.toFixed(6)} (cooldown=${item.alertCooldownSeconds || 1800}s)`,
+            );
+
+            const reason = item.alertMode === 'price'
+              ? `target: ${item.condition} $${item.targetPrice!.toFixed(4)}`
+              : `${item.avgWindowMinutes}m avg x ${item.avgTargetPercent}%: ${item.condition} $${averageTargetPrice!.toFixed(4)}`;
+            const actionResult = await processAlertActions({
+              item,
+              ruleKey,
+              pairSymbol: formatPair(item.baseToken, item.quoteToken!),
+              currentPrice: price,
+              reason,
+              tradeSide,
+              tradeCooldownKey,
+              triggerThreshold,
+              configTradeEnabled: config.trade?.enabled === true,
+              configTelegram: config.telegram,
+              state,
+            }, {
+              shouldAlertFn: shouldAlert,
+              sendTelegramFn: sendTelegramMessage,
+              repriceFn: () => getTokenPrice(group.baseToken, group.quoteToken, undefined, { forceRefresh: true }),
+              executeTradeFn: () => executeTrade(config.trade!, item, tradeSide!, {
+                lockedCycleAvailableAmount: tradeCooldownKey
+                  ? tradeCycleBaseAvailable.get(tradeCooldownKey)
+                  : undefined,
+              }),
+            });
+
+            if (actionResult.tradeExecuted && actionResult.tradeExecutionResult?.digest) {
+              console.log(
+                `[Trade] Executed ${tradeSide!.toUpperCase()} for ${formatPair(item.baseToken, item.quoteToken!)} | digest=${actionResult.tradeExecutionResult.digest}`,
+              );
+            }
+
+            if (actionResult.opsNotification) {
+              await maybeSendOpsAlert(ruleKey, actionResult.opsNotification.kind, actionResult.opsNotification.message);
+            }
+
+            if (actionResult.alertSent) {
+              console.log(`[Telegram] Alert sent for ${formatPair(item.baseToken, item.quoteToken!)}`);
+              recordAlert(ruleKey, state);
+              if (actionResult.shouldRecordTradeCooldown && tradeCooldownKey) {
+                recordAlert(tradeCooldownKey, state);
+              }
+
+              if (item.alertMode === 'avg_percent' && avgWindowPrice !== null) {
+                averagePauseRules.set(ruleKey, createAveragePauseRule(item, avgWindowPrice));
+              }
+
+              saveState(STATE_FILE, state);
+            } else {
+              console.error(`[Telegram] Alert failed for ${formatPair(item.baseToken, item.quoteToken!)}`);
+            }
+          } else if (isAlertConfirmed) {
+            console.log(
+              `[Alert] Cooldown active for ${formatPair(item.baseToken, item.quoteToken!)}, skip for ${item.alertCooldownSeconds || 1800}s window`,
+            );
+          }
+        }
+
+        const shouldSamplePrice = group.items.some(({ ruleKey }) => !averagePauseRules.has(ruleKey));
+        if (shouldSamplePrice) {
+          history.push({ timestamp: now, price });
+        }
+        priceHistory.set(group.groupKey, history);
+      } catch (error: unknown) {
+        const message = error instanceof Error ? error.message : String(error);
+        console.error(`[Watcher] Error in polling loop for ${formatPair(group.baseToken, group.quoteToken)}: ${message}`);
+      }
+    });
+
+    void check();
+    setInterval(() => {
+      void check();
+    }, group.pollIntervalMs);
   }
 }
