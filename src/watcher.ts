@@ -12,9 +12,11 @@ import {
 import type { AveragePauseRule } from './watcher-logic.js';
 import { createAveragePauseRule, evaluateWatchRule } from './watcher-rules.js';
 import { buildOpsAlertMessage, processAlertActions } from './watcher-actions.js';
+import { createModuleLogger, toLogError } from './logger.js';
 
 const STATE_FILE = 'state.json';
 const DEFAULT_OPS_COOLDOWN_SECONDS = 3600;
+const log = createModuleLogger('Watcher');
 
 interface PricePoint {
   timestamp: number;
@@ -71,7 +73,7 @@ export async function startWatcher(config: Config) {
     quoteToken: item.quoteToken!,
   })));
   if (JSON.stringify(state.lastAlertTime) !== JSON.stringify(loadedState.lastAlertTime)) {
-    console.log('[State] Migrated legacy cooldown keys to explicit rule ids');
+    log.info({ event: 'state_migrated' }, 'Migrated legacy cooldown keys to explicit rule ids');
     saveState(STATE_FILE, state);
   }
   const priceHistory = new Map<string, PricePoint[]>();
@@ -87,17 +89,39 @@ export async function startWatcher(config: Config) {
   ): Promise<boolean> => {
     const opsCooldownKey = createOpsCooldownKey(ruleKey, issueType);
     if (!shouldAlert(opsCooldownKey, DEFAULT_OPS_COOLDOWN_SECONDS, state)) {
-      console.log(`[Ops] Cooldown active for ${issueType} (${ruleKey}), skip for ${DEFAULT_OPS_COOLDOWN_SECONDS}s window`);
+      log.info(
+        {
+          event: 'ops_cooldown_active',
+          issueType,
+          ruleKey,
+          cooldownSeconds: DEFAULT_OPS_COOLDOWN_SECONDS,
+        },
+        'Ops alert cooldown active',
+      );
       return false;
     }
 
     const sent = await sendTelegramMessage(config.telegram, message);
     if (sent) {
-      console.log(`[Ops] Alert sent for ${issueType} (${ruleKey})`);
+      log.info(
+        {
+          event: 'ops_alert_sent',
+          issueType,
+          ruleKey,
+        },
+        'Ops alert sent',
+      );
       recordAlert(opsCooldownKey, state);
       saveState(STATE_FILE, state);
     } else {
-      console.error(`[Ops] Alert failed for ${issueType} (${ruleKey})`);
+      log.error(
+        {
+          event: 'ops_alert_failed',
+          issueType,
+          ruleKey,
+        },
+        'Ops alert failed',
+      );
     }
 
     return sent;
@@ -135,7 +159,15 @@ export async function startWatcher(config: Config) {
         const price = await getTokenPrice(group.baseToken, group.quoteToken);
 
         if (price === null) {
-          console.error(`[Watcher] Failed to fetch price for ${formatPair(group.baseToken, group.quoteToken)}`);
+          log.error(
+            {
+              event: 'price_fetch_failed',
+              pair: formatPair(group.baseToken, group.quoteToken),
+              baseToken: group.baseToken,
+              quoteToken: group.quoteToken,
+            },
+            'Failed to fetch price',
+          );
           return;
         }
 
@@ -161,8 +193,16 @@ export async function startWatcher(config: Config) {
           })
           .join(', ');
 
-        console.log(
-          `[Monitor] ${formatPair(group.baseToken, group.quoteToken)} | current: $${price.toFixed(6)} | windows: ${averageText} | samples: ${history.length} | rules: ${group.items.length}`,
+        log.info(
+          {
+            event: 'monitor_tick',
+            pair: formatPair(group.baseToken, group.quoteToken),
+            currentPrice: price,
+            windows: averageText,
+            samples: history.length,
+            rules: group.items.length,
+          },
+          'Monitor snapshot',
         );
 
         for (const groupedItem of group.items) {
@@ -192,8 +232,16 @@ export async function startWatcher(config: Config) {
           const triggerThreshold = evaluation.triggerThreshold;
 
           if (isConditionMet) {
-            console.log(
-              `[Trigger] ${formatPair(item.baseToken, item.quoteToken!)} hit condition=${item.condition} mode=${item.alertMode} | current=$${price.toFixed(6)} | threshold=$${triggerThreshold!.toFixed(6)}`,
+            log.info(
+              {
+                event: 'condition_triggered',
+                pair: formatPair(item.baseToken, item.quoteToken!),
+                condition: item.condition,
+                mode: item.alertMode,
+                currentPrice: price,
+                threshold: triggerThreshold,
+              },
+              'Rule condition triggered',
             );
           }
 
@@ -213,7 +261,15 @@ export async function startWatcher(config: Config) {
             const requiredConfirmations = item.tradeConfirmations || 2;
 
             if (triggerThreshold === null) {
-              console.warn(`[Trade] Skip ${tradeSide.toUpperCase()} for ${formatPair(item.baseToken, item.quoteToken!)}: missing trigger threshold`);
+              log.warn(
+                {
+                  event: 'trade_skipped',
+                  reason: 'missing_trigger_threshold',
+                  side: tradeSide,
+                  pair: formatPair(item.baseToken, item.quoteToken!),
+                },
+                'Skip trade: missing trigger threshold',
+              );
 
               const opsMessage = buildOpsAlertMessage({
                 title: 'Config Error',
@@ -232,7 +288,15 @@ export async function startWatcher(config: Config) {
             if (!lockedCycleAvailableAmount) {
               const currentTradableAmount = await getCurrentTradableAmount(config.trade, item, tradeSide);
               if (currentTradableAmount <= 0n) {
-                console.warn(`[Trade] Skip ${tradeSide.toUpperCase()} for ${formatPair(item.baseToken, item.quoteToken!)}: insufficient tradable balance`);
+                log.warn(
+                  {
+                    event: 'trade_skipped',
+                    reason: 'insufficient_tradable_balance',
+                    side: tradeSide,
+                    pair: formatPair(item.baseToken, item.quoteToken!),
+                  },
+                  'Skip trade: insufficient tradable balance',
+                );
 
                 const opsMessage = buildOpsAlertMessage({
                   title: 'Insufficient Balance',
@@ -251,8 +315,15 @@ export async function startWatcher(config: Config) {
             }
 
             if (hitCount < requiredConfirmations) {
-              console.log(
-                `[Trade] Waiting confirmation ${hitCount}/${requiredConfirmations} for ${formatPair(item.baseToken, item.quoteToken!)} (${tradeSide})`,
+              log.info(
+                {
+                  event: 'trade_confirmation_waiting',
+                  pair: formatPair(item.baseToken, item.quoteToken!),
+                  side: tradeSide,
+                  hitCount,
+                  requiredConfirmations,
+                },
+                'Waiting for trade confirmations',
               );
               continue;
             }
@@ -266,8 +337,15 @@ export async function startWatcher(config: Config) {
           const isAlertConfirmed = evaluation.isAlertConfirmed;
 
           if (isAlertConfirmed && shouldAlert(ruleKey, item.alertCooldownSeconds || 1800, state)) {
-            console.log(
-              `[Alert] Triggered for ${formatPair(item.baseToken, item.quoteToken!)} at $${price.toFixed(6)} (cooldown=${item.alertCooldownSeconds || 1800}s)`,
+            log.info(
+              {
+                event: 'alert_triggered',
+                pair: formatPair(item.baseToken, item.quoteToken!),
+                currentPrice: price,
+                cooldownSeconds: item.alertCooldownSeconds || 1800,
+                ruleKey,
+              },
+              'Alert triggered',
             );
 
             const reason = item.alertMode === 'price'
@@ -297,8 +375,14 @@ export async function startWatcher(config: Config) {
             });
 
             if (actionResult.tradeExecuted && actionResult.tradeExecutionResult?.digest) {
-              console.log(
-                `[Trade] Executed ${tradeSide!.toUpperCase()} for ${formatPair(item.baseToken, item.quoteToken!)} | digest=${actionResult.tradeExecutionResult.digest}`,
+              log.info(
+                {
+                  event: 'trade_executed',
+                  side: tradeSide,
+                  pair: formatPair(item.baseToken, item.quoteToken!),
+                  digest: actionResult.tradeExecutionResult.digest,
+                },
+                'Trade executed',
               );
             }
 
@@ -307,7 +391,14 @@ export async function startWatcher(config: Config) {
             }
 
             if (actionResult.alertSent) {
-              console.log(`[Telegram] Alert sent for ${formatPair(item.baseToken, item.quoteToken!)}`);
+              log.info(
+                {
+                  event: 'telegram_alert_sent',
+                  pair: formatPair(item.baseToken, item.quoteToken!),
+                  ruleKey,
+                },
+                'Telegram alert sent',
+              );
               recordAlert(ruleKey, state);
               if (actionResult.shouldRecordTradeCooldown && tradeCooldownKey) {
                 recordAlert(tradeCooldownKey, state);
@@ -319,11 +410,24 @@ export async function startWatcher(config: Config) {
 
               saveState(STATE_FILE, state);
             } else {
-              console.error(`[Telegram] Alert failed for ${formatPair(item.baseToken, item.quoteToken!)}`);
+              log.error(
+                {
+                  event: 'telegram_alert_failed',
+                  pair: formatPair(item.baseToken, item.quoteToken!),
+                  ruleKey,
+                },
+                'Telegram alert failed',
+              );
             }
           } else if (isAlertConfirmed) {
-            console.log(
-              `[Alert] Cooldown active for ${formatPair(item.baseToken, item.quoteToken!)}, skip for ${item.alertCooldownSeconds || 1800}s window`,
+            log.info(
+              {
+                event: 'alert_cooldown_active',
+                pair: formatPair(item.baseToken, item.quoteToken!),
+                ruleKey,
+                cooldownSeconds: item.alertCooldownSeconds || 1800,
+              },
+              'Alert cooldown active',
             );
           }
         }
@@ -334,8 +438,16 @@ export async function startWatcher(config: Config) {
         }
         priceHistory.set(group.groupKey, history);
       } catch (error: unknown) {
-        const message = error instanceof Error ? error.message : String(error);
-        console.error(`[Watcher] Error in polling loop for ${formatPair(group.baseToken, group.quoteToken)}: ${message}`);
+        log.error(
+          {
+            event: 'poll_loop_error',
+            pair: formatPair(group.baseToken, group.quoteToken),
+            baseToken: group.baseToken,
+            quoteToken: group.quoteToken,
+            err: toLogError(error),
+          },
+          'Error in polling loop',
+        );
       }
     });
 

@@ -295,6 +295,29 @@ npm run build
 npx ts-node --esm src/index.ts
 ```
 
+### 日志与排错
+
+应用默认输出 JSON 结构化日志（单行一条），核心字段包括：
+- `time`：ISO 时间
+- `level`：日志级别（`trace/debug/info/warn/error/fatal`）
+- `service`：服务名（`cetus-peg-watcher`）
+- `module`：模块名（如 `Watcher`、`Cetus`、`Trade`）
+- `event`：事件名（如 `poll_loop_error`、`price_fetch_failed`）
+- `msg`：可读消息
+- `err`：错误对象（仅错误日志，包含 `type/message/stack`）
+
+按错误级别筛选示例：
+
+```bash
+npm start 2>&1 | jq -c 'select(.level >= 50)'
+```
+
+开发时若希望可读格式日志（非 JSON）：
+
+```bash
+LOG_PRETTY=true npm start
+```
+
 ### Docker 部署
 
 ```bash

@@ -8,10 +8,12 @@ import { Transaction } from '@mysten/sui/transactions';
 import { TradeConfig, WatchItem } from './config.js';
 import { getCoinDecimals } from './coin-metadata.js';
 import { formatPair } from './formatters.js';
+import { createModuleLogger, toLogError } from './logger.js';
 
 const SUI_MIST_PER_SUI = 1_000_000_000n;
 const TRADE_PERCENT_SCALE = 10_000;
 const TRADE_PERCENT_DENOMINATOR = 100 * TRADE_PERCENT_SCALE;
+const log = createModuleLogger('Trade');
 
 export type TradeSide = 'buy' | 'sell';
 
@@ -279,7 +281,15 @@ export async function executeTrade(
   const outputCoin = side === 'buy' ? item.baseToken : item.quoteToken!;
 
   if (!tradeConfig.enabled) {
-    console.log(`[Trade] Skip ${formatPair(inputCoin, outputCoin)}: trade disabled`);
+    log.info(
+      {
+        event: 'trade_skipped',
+        reason: 'trade_disabled',
+        pair: formatPair(inputCoin, outputCoin),
+        side,
+      },
+      'Skip trade: trade disabled',
+    );
     return {
       success: false,
       skipped: true,
@@ -305,7 +315,15 @@ export async function executeTrade(
   let tradableAmount = calculateAmountByPercent(cycleBaseAmount, tradeConfig);
 
   if (options?.lockedCycleAvailableAmount && tradableAmount > currentTradableAmount) {
-    console.log(`[Trade] Skip ${formatPair(inputCoin, outputCoin)}: insufficient tradable balance for locked cycle amount`);
+    log.info(
+      {
+        event: 'trade_skipped',
+        reason: 'insufficient_tradable_balance_locked_cycle',
+        pair: formatPair(inputCoin, outputCoin),
+        side,
+      },
+      'Skip trade: insufficient tradable balance for locked cycle amount',
+    );
     return {
       success: false,
       skipped: true,
@@ -318,7 +336,15 @@ export async function executeTrade(
   }
 
   if (tradableAmount <= 0n) {
-    console.log(`[Trade] Skip ${formatPair(inputCoin, outputCoin)}: insufficient tradable balance`);
+    log.info(
+      {
+        event: 'trade_skipped',
+        reason: 'insufficient_tradable_balance',
+        pair: formatPair(inputCoin, outputCoin),
+        side,
+      },
+      'Skip trade: insufficient tradable balance',
+    );
     return {
       success: false,
       skipped: true,
@@ -337,7 +363,16 @@ export async function executeTrade(
   });
 
   if (!route || route.insufficientLiquidity || route.amountOut.toString() === '0') {
-    console.log(`[Trade] Skip ${formatPair(inputCoin, outputCoin)}: no executable route (insufficientLiquidity=${route?.insufficientLiquidity})`);
+    log.info(
+      {
+        event: 'trade_skipped',
+        reason: 'no_executable_route',
+        pair: formatPair(inputCoin, outputCoin),
+        side,
+        insufficientLiquidity: route?.insufficientLiquidity,
+      },
+      'Skip trade: no executable route',
+    );
     return {
       success: false,
       skipped: true,
@@ -360,7 +395,15 @@ export async function executeTrade(
   const digest = extractDigest(execution);
   
   if (digest) {
-    console.log(`[Trade] Submitted ${formatPair(inputCoin, outputCoin)} ${side.toUpperCase()} tx=${digest}`);
+    log.info(
+      {
+        event: 'trade_submitted',
+        pair: formatPair(inputCoin, outputCoin),
+        side,
+        digest,
+      },
+      'Submitted trade transaction',
+    );
   }
   let amountOut: string | undefined;
   let realizedPrice: number | undefined;
@@ -381,8 +424,16 @@ export async function executeTrade(
       inputDecimals = executionMetrics.inputDecimals;
       outputDecimals = executionMetrics.outputDecimals;
     } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : String(error);
-      console.warn(`[Trade] Unable to fetch metrics for ${formatPair(inputCoin, outputCoin)} tx=${digest}: ${message}`);
+      log.warn(
+        {
+          event: 'trade_metrics_fetch_failed',
+          pair: formatPair(inputCoin, outputCoin),
+          side,
+          digest,
+          err: toLogError(error),
+        },
+        'Unable to fetch trade metrics',
+      );
     }
   }
 

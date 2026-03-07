@@ -1,5 +1,8 @@
 import axios from 'axios';
 import { TelegramConfig } from './config.js';
+import { createModuleLogger, toLogError } from './logger.js';
+
+const log = createModuleLogger('Telegram');
 
 export async function sendTelegramMessage(config: TelegramConfig | undefined, text: string): Promise<boolean> {
   if (!config?.enabled || !config.botToken || !config.chatId) {
@@ -38,13 +41,33 @@ export async function sendTelegramMessage(config: TelegramConfig | undefined, te
           : JSON.stringify(responseData);
 
       if (status) {
-        console.error(`[Telegram] Error sending message (status=${status}): ${detail}`);
+        log.error(
+          {
+            event: 'telegram_send_failed',
+            status,
+            detail,
+            err: toLogError(error),
+          },
+          'Error sending Telegram message',
+        );
       } else {
-        console.error(`[Telegram] Error sending message: ${detail}`);
+        log.error(
+          {
+            event: 'telegram_send_failed',
+            detail,
+            err: toLogError(error),
+          },
+          'Error sending Telegram message',
+        );
       }
     } else {
-      const message = error instanceof Error ? error.message : String(error);
-      console.error(`[Telegram] Error sending message: ${message}`);
+      log.error(
+        {
+          event: 'telegram_send_failed',
+          err: toLogError(error),
+        },
+        'Error sending Telegram message',
+      );
     }
     return false;
   }

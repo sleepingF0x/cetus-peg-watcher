@@ -1,32 +1,33 @@
 import { loadConfig } from './config.js';
 import { startWatcher } from './watcher.js';
+import { createModuleLogger, toLogError } from './logger.js';
 
 const CONFIG_FILE = 'config.json';
+const log = createModuleLogger('Index');
 
 async function main() {
-  console.log('🚀 Starting Cetus Peg Watcher...');
-  console.log('Press Ctrl+C to stop\n');
+  log.info({ event: 'service_starting' }, 'Starting Cetus Peg Watcher');
 
   try {
     const config = loadConfig(CONFIG_FILE);
-    console.log(`✅ Loaded ${config.items.length} watch item(s)`);
-    console.log('Starting price monitoring...\n');
+    log.info({ event: 'config_loaded', watchItemCount: config.items.length }, 'Loaded watch items');
+    log.info({ event: 'watcher_starting' }, 'Starting price monitoring');
 
     await startWatcher(config);
-  } catch (error: any) {
-    console.error('❌ Failed to start watcher:', error.message);
+  } catch (error: unknown) {
+    log.fatal({ event: 'service_start_failed', err: toLogError(error) }, 'Failed to start watcher');
     process.exit(1);
   }
 }
 
 // Graceful shutdown
 process.on('SIGINT', () => {
-  console.log('\n👋 Shutting down gracefully...');
+  log.info({ event: 'shutdown_signal', signal: 'SIGINT' }, 'Shutting down gracefully');
   process.exit(0);
 });
 
 process.on('SIGTERM', () => {
-  console.log('\n👋 Shutting down gracefully...');
+  log.info({ event: 'shutdown_signal', signal: 'SIGTERM' }, 'Shutting down gracefully');
   process.exit(0);
 });
 

@@ -1,4 +1,5 @@
 import fs from 'fs';
+import { createModuleLogger, toLogError } from './logger.js';
 
 export interface AlertState {
   lastAlertTime: Record<string, number>;
@@ -9,6 +10,8 @@ interface StateMigrationItem {
   baseToken: string;
   quoteToken: string;
 }
+
+const log = createModuleLogger('State');
 
 export function loadState(filePath: string): AlertState {
   if (!fs.existsSync(filePath) || !fs.statSync(filePath).isFile()) {
@@ -22,7 +25,14 @@ export function loadState(filePath: string): AlertState {
     }
     return JSON.parse(rawData) as AlertState;
   } catch (error) {
-    console.error(`Error loading state from ${filePath}:`, error);
+    log.error(
+      {
+        event: 'state_load_failed',
+        filePath,
+        err: toLogError(error),
+      },
+      'Error loading state file',
+    );
     return { lastAlertTime: {} };
   }
 }
@@ -32,7 +42,14 @@ export function saveState(filePath: string, state: AlertState): void {
     const data = JSON.stringify(state, null, 2);
     fs.writeFileSync(filePath, data, 'utf-8');
   } catch (error) {
-    console.error(`Error saving state to ${filePath}:`, error);
+    log.error(
+      {
+        event: 'state_save_failed',
+        filePath,
+        err: toLogError(error),
+      },
+      'Error saving state file',
+    );
     throw error;
   }
 }

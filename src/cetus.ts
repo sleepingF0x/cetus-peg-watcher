@@ -1,5 +1,6 @@
 import axios from 'axios';
 import { getCoinDecimals } from './coin-metadata.js';
+import { createModuleLogger, toLogError } from './logger.js';
 
 export interface CetusQuoteResponse {
   code: number;
@@ -15,6 +16,7 @@ const CETUS_API_URL = 'https://api-sui.cetus.zone/router_v3/find_routes';
 const SDK_VERSION = 1010404;
 const PRICE_CACHE_TTL_MS = 1000;
 const DEFAULT_QUERY_AMOUNT_KEY = 'AUTO_1_BASE_TOKEN';
+const log = createModuleLogger('Cetus');
 
 async function delay(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -58,7 +60,16 @@ export async function getTokenPrice(
       ]);
 
       if (baseDecimals === null || quoteDecimals === null) {
-        console.error(`[Cetus] Failed to fetch decimals, skipping price calculation`);
+        log.error(
+          {
+            event: 'price_fetch_decimals_failed',
+            baseToken,
+            quoteToken,
+            attempt: i + 1,
+            retries,
+          },
+          'Failed to fetch decimals, skipping price calculation',
+        );
         if (i === retries) return null;
         await delay(backoffDelays[i]);
         continue;
@@ -90,12 +101,32 @@ export async function getTokenPrice(
         });
         return computedPrice;
       } else {
-        console.error(`Cetus API error: ${response.data.msg || 'Unknown error'}`);
+        log.error(
+          {
+            event: 'price_fetch_api_error',
+            baseToken,
+            quoteToken,
+            attempt: i + 1,
+            retries,
+            code: response.data.code,
+            apiMessage: response.data.msg || 'Unknown error',
+          },
+          'Cetus API returned an unsuccessful response',
+        );
         if (i === retries) return null;
       }
-    } catch (error: any) {
+    } catch (error: unknown) {
       if (i === retries) {
-        console.error(`Failed to fetch price from Cetus after ${retries} retries: ${error.message}`);
+        log.error(
+          {
+            event: 'price_fetch_failed',
+            baseToken,
+            quoteToken,
+            retries,
+            err: toLogError(error),
+          },
+          `Failed to fetch price from Cetus after ${retries} retries`,
+        );
         return null;
       }
       await delay(backoffDelays[i]);
