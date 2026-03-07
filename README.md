@@ -299,7 +299,8 @@ npx ts-node --esm src/index.ts
 
 应用默认输出 JSON 结构化日志（单行一条），核心字段包括：
 - `time`：ISO 时间
-- `level`：日志级别（`trace/debug/info/warn/error/fatal`）
+- `level`：日志级别数值（`10/20/30/40/50/60`）
+- `levelName`：日志级别文本（`trace/debug/info/warn/error/fatal`）
 - `service`：服务名（`cetus-peg-watcher`）
 - `module`：模块名（如 `Watcher`、`Cetus`、`Trade`）
 - `event`：事件名（如 `poll_loop_error`、`price_fetch_failed`）

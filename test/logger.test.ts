@@ -34,6 +34,7 @@ test('createModuleLogger writes structured JSON logs with standard fields', () =
   assert.equal(destination.chunks.length, 1);
   const payload = JSON.parse(destination.chunks[0]);
   assert.equal(payload.level, 30);
+  assert.equal(payload.levelName, 'info');
   assert.equal(payload.service, 'test-service');
   assert.equal(payload.module, 'Watcher');
   assert.equal(payload.event, 'monitor_tick');
@@ -66,6 +67,7 @@ test('error logs include serialized error details', () => {
   assert.equal(destination.chunks.length, 1);
   const payload = JSON.parse(destination.chunks[0]);
   assert.equal(payload.level, 50);
+  assert.equal(payload.levelName, 'error');
   assert.equal(payload.event, 'price_fetch_failed');
   assert.equal(payload.msg, 'failed to fetch price');
   assert.equal(payload.err.type, 'Error');

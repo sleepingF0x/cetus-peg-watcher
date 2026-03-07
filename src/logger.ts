@@ -41,6 +41,14 @@ export function createLogger(options: CreateLoggerOptions = {}): Logger {
     base: {
       service: options.service || DEFAULT_SERVICE,
     },
+    formatters: {
+      level(label, number) {
+        return {
+          level: number,
+          levelName: label,
+        };
+      },
+    },
     timestamp: pino.stdTimeFunctions.isoTime,
     messageKey: 'msg',
   };
