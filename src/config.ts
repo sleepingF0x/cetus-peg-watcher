@@ -26,6 +26,14 @@ export interface TradeConfig {
   slippagePercent?: number;
   suiGasReserve?: number;
   maxTradePercent?: number;
+  fastTrackEnabled?: boolean;
+  fastTrackExtraPercent?: number;
+  fastTrackTradePercent?: number;
+  fastTrackSlippageMultiplier?: number;
+  fastTrackMaxSlippagePercent?: number;
+  statusPollDelayMs?: number;
+  statusPollIntervalMs?: number;
+  statusPollTimeoutMs?: number;
 }
 
 export interface TelegramConfig {
@@ -52,6 +60,18 @@ const DEFAULT_TRADE_RPC_URL = 'https://fullnode.mainnet.sui.io:443';
 const DEFAULT_SLIPPAGE_PERCENT = 0.1;
 const DEFAULT_SUI_GAS_RESERVE = 0.02;
 const DEFAULT_MAX_TRADE_PERCENT = 100;
+const DEFAULT_FAST_TRACK_ENABLED = true;
+const DEFAULT_FAST_TRACK_EXTRA_PERCENT = 1.5;
+const DEFAULT_FAST_TRACK_TRADE_PERCENT = 75;
+const DEFAULT_FAST_TRACK_SLIPPAGE_MULTIPLIER = 0.35;
+const DEFAULT_FAST_TRACK_MAX_SLIPPAGE_PERCENT = 2;
+const DEFAULT_STATUS_POLL_DELAY_MS = 1500;
+const DEFAULT_STATUS_POLL_INTERVAL_MS = 1500;
+const DEFAULT_STATUS_POLL_TIMEOUT_MS = 15000;
+
+function isPositiveInteger(value: unknown): value is number {
+  return Number.isInteger(value) && (value as number) > 0;
+}
 
 export function loadConfig(filePath: string): Config {
   if (!fs.existsSync(filePath)) {
@@ -92,6 +112,30 @@ export function loadConfig(filePath: string): Config {
   }
   if (tradeConfig.maxTradePercent !== undefined && (typeof tradeConfig.maxTradePercent !== 'number' || tradeConfig.maxTradePercent <= 0 || tradeConfig.maxTradePercent > 100)) {
     throw new Error('trade.maxTradePercent must be a number between 0 and 100');
+  }
+  if (tradeConfig.fastTrackEnabled !== undefined && typeof tradeConfig.fastTrackEnabled !== 'boolean') {
+    throw new Error('trade.fastTrackEnabled must be a boolean');
+  }
+  if (tradeConfig.fastTrackExtraPercent !== undefined && (typeof tradeConfig.fastTrackExtraPercent !== 'number' || tradeConfig.fastTrackExtraPercent <= 0 || tradeConfig.fastTrackExtraPercent >= 100)) {
+    throw new Error('trade.fastTrackExtraPercent must be a number between 0 and 100');
+  }
+  if (tradeConfig.fastTrackTradePercent !== undefined && (typeof tradeConfig.fastTrackTradePercent !== 'number' || tradeConfig.fastTrackTradePercent <= 0 || tradeConfig.fastTrackTradePercent > 100)) {
+    throw new Error('trade.fastTrackTradePercent must be a number between 0 and 100');
+  }
+  if (tradeConfig.fastTrackSlippageMultiplier !== undefined && (typeof tradeConfig.fastTrackSlippageMultiplier !== 'number' || tradeConfig.fastTrackSlippageMultiplier < 0)) {
+    throw new Error('trade.fastTrackSlippageMultiplier must be a non-negative number');
+  }
+  if (tradeConfig.fastTrackMaxSlippagePercent !== undefined && (typeof tradeConfig.fastTrackMaxSlippagePercent !== 'number' || tradeConfig.fastTrackMaxSlippagePercent <= 0 || tradeConfig.fastTrackMaxSlippagePercent >= 100)) {
+    throw new Error('trade.fastTrackMaxSlippagePercent must be a number between 0 and 100');
+  }
+  if (tradeConfig.statusPollDelayMs !== undefined && !isPositiveInteger(tradeConfig.statusPollDelayMs)) {
+    throw new Error('trade.statusPollDelayMs must be a positive integer');
+  }
+  if (tradeConfig.statusPollIntervalMs !== undefined && !isPositiveInteger(tradeConfig.statusPollIntervalMs)) {
+    throw new Error('trade.statusPollIntervalMs must be a positive integer');
+  }
+  if (tradeConfig.statusPollTimeoutMs !== undefined && !isPositiveInteger(tradeConfig.statusPollTimeoutMs)) {
+    throw new Error('trade.statusPollTimeoutMs must be a positive integer');
   }
   if (tradeConfig.enabled && (!tradeConfig.mnemonicFile || typeof tradeConfig.mnemonicFile !== 'string')) {
     throw new Error('trade.mnemonicFile is required when trade.enabled is true');
@@ -187,6 +231,14 @@ export function loadConfig(filePath: string): Config {
     slippagePercent: tradeConfig.slippagePercent || DEFAULT_SLIPPAGE_PERCENT,
     suiGasReserve: tradeConfig.suiGasReserve ?? DEFAULT_SUI_GAS_RESERVE,
     maxTradePercent: tradeConfig.maxTradePercent || DEFAULT_MAX_TRADE_PERCENT,
+    fastTrackEnabled: tradeConfig.fastTrackEnabled ?? DEFAULT_FAST_TRACK_ENABLED,
+    fastTrackExtraPercent: tradeConfig.fastTrackExtraPercent ?? DEFAULT_FAST_TRACK_EXTRA_PERCENT,
+    fastTrackTradePercent: tradeConfig.fastTrackTradePercent ?? DEFAULT_FAST_TRACK_TRADE_PERCENT,
+    fastTrackSlippageMultiplier: tradeConfig.fastTrackSlippageMultiplier ?? DEFAULT_FAST_TRACK_SLIPPAGE_MULTIPLIER,
+    fastTrackMaxSlippagePercent: tradeConfig.fastTrackMaxSlippagePercent ?? DEFAULT_FAST_TRACK_MAX_SLIPPAGE_PERCENT,
+    statusPollDelayMs: tradeConfig.statusPollDelayMs ?? DEFAULT_STATUS_POLL_DELAY_MS,
+    statusPollIntervalMs: tradeConfig.statusPollIntervalMs ?? DEFAULT_STATUS_POLL_INTERVAL_MS,
+    statusPollTimeoutMs: tradeConfig.statusPollTimeoutMs ?? DEFAULT_STATUS_POLL_TIMEOUT_MS,
     derivationPath: tradeConfig.derivationPath || "m/44'/784'/0'/0'/0'",
   };
 

@@ -58,8 +58,8 @@ npm start
 
 Telegram 目前分为 3 类事件：
 
-- `signal`：价格告警、交易成功
-- `ops`：配置错误、余额不足、交易失败
+- `signal`：价格告警、交易提交中、交易成功、交易失败、交易待确认后的补发结果
+- `ops`：配置错误、余额不足、交易执行异常（如 SDK/RPC 抛错）
 - `silent`：轮询、冷却命中、等待确认、暂停/恢复等，仅写日志
 
 | 字段 | 类型 | 必填 | 默认值 | 说明 |
@@ -77,9 +77,17 @@ Telegram 目前分为 3 类事件：
 | `mnemonicFile` | string | 当 enabled=true | - | 助记词文件路径（权限必须为 600） |
 | `derivationPath` | string | - | `m/44'/784'/0'/0'/0'` | BIP44 派生路径 |
 | `rpcUrl` | string | - | `https://fullnode.mainnet.sui.io:443` | Sui RPC 节点地址 |
-| `slippagePercent` | number | - | `0.1` | 滑点容忍（百分比），如 0.1 表示 0.1% |
+| `slippagePercent` | number | - | `0.1` | 常规交易滑点容忍（百分比），如 0.1 表示 0.1% |
 | `suiGasReserve` | number | - | `0.02` | 交易 SUI 时预留的 gas 数量 |
-| `maxTradePercent` | number | - | `100` | 每次交易使用可用余额的比例（%），如 30 表示只用 30% |
+| `maxTradePercent` | number | - | `100` | 常规模式每次交易使用可用余额的比例（%），如 30 表示只用 30% |
+| `fastTrackEnabled` | boolean | - | `true` | 是否启用极端偏离 fast-track 快速下单 |
+| `fastTrackExtraPercent` | number | - | `1.5` | 在原触发线之外再多偏离多少百分点时，跳过 `tradeConfirmations` 立即下单 |
+| `fastTrackTradePercent` | number | - | `75` | fast-track 模式下使用的可用余额比例（%） |
+| `fastTrackSlippageMultiplier` | number | - | `0.35` | fast-track 动态滑点系数。超出 `fastTrackExtraPercent` 的每 1 个百分点，额外增加多少滑点 |
+| `fastTrackMaxSlippagePercent` | number | - | `2` | fast-track 模式的滑点硬上限（%） |
+| `statusPollDelayMs` | number | - | `1500` | 交易提交后，首次查询链上最终状态前等待的毫秒数 |
+| `statusPollIntervalMs` | number | - | `1500` | 链上最终状态轮询间隔（毫秒） |
+| `statusPollTimeoutMs` | number | - | `15000` | 单次交易状态查询超时时间。超时后先发 pending，再后台继续补发最终结果 |
 
 ### 监控项配置 (`items[]`)
 
@@ -136,9 +144,29 @@ Telegram 目前分为 3 类事件：
 
 - 触发交易后，会立刻再次请求最新报价（re-quote）
 - 交易前需要连续 `tradeConfirmations` 次轮询都满足条件（默认 2 次）
+- 若 `avg_percent` 模式下当前价格相对触发线的额外偏离达到 `fastTrackExtraPercent`，则进入 fast-track，跳过 `tradeConfirmations`
 - 若 re-quote 已不满足阈值条件，则跳过本次交易
 - 同一触发周期内，交易金额基于“首个触发时的可用金额”按 `maxTradePercent` 计算
+- fast-track 模式下，交易金额改为按 `fastTrackTradePercent` 计算
 - 若输入币是 SUI，会先预留 `suiGasReserve` 再计算可用金额
+
+### 3.6 fast-track 与动态滑点
+
+- fast-track 仅对 `avg_percent` 模式生效
+- 先计算当前触发线：`triggerThreshold = avgWindowPrice * (avgTargetPercent / 100)`
+- 再计算额外偏离：`overshootPercent = abs(currentPrice - triggerThreshold) / avgWindowPrice * 100`
+- 当 `overshootPercent >= fastTrackExtraPercent` 时：
+  - 直接跳过 `tradeConfirmations`
+  - 使用 `fastTrackTradePercent`
+  - 启用动态滑点
+
+动态滑点公式：
+
+```text
+extraOvershootPercent = max(0, overshootPercent - fastTrackExtraPercent)
+dynamicSlippage = slippagePercent + extraOvershootPercent * fastTrackSlippageMultiplier
+finalSlippage = min(dynamicSlippage, fastTrackMaxSlippagePercent)
+```
 
 ### 4. 冷却机制
 
@@ -165,7 +193,8 @@ Telegram 目前分为 3 类事件：
 1. **计算可交易金额**
    - 查询钱包该币种可用余额
    - 若输入币为 SUI，预留 `suiGasReserve` 作为 gas
-   - 乘以 `maxTradePercent` 得到最终下单金额
+   - 常规模式乘以 `maxTradePercent`
+   - fast-track 模式乘以 `fastTrackTradePercent`
 
 2. **查询最优路由**
    - 使用 Cetus Aggregator SDK 的 `findRouters()`
@@ -174,13 +203,17 @@ Telegram 目前分为 3 类事件：
 
 3. **构建并执行交易**
    - `fastRouterSwap()` 自动合并多路径
-   - 应用滑点控制（`slippagePercent`）
+   - 常规模式应用 `slippagePercent`
+   - fast-track 模式按动态公式提高滑点，但不超过 `fastTrackMaxSlippagePercent`
    - 使用助记词签名并广播到链上
 
 4. **结果处理**
-   - 成功：发送 `signal` 类 Telegram 通知（含交易哈希）
-   - 成功：基于交易哈希回查链上 balanceChanges，提取 `amountIn/amountOut` 并计算 `realized` 成交价
-   - 失败：记录日志，并按冷却规则发送 `ops` 类 Telegram 运维告警
+   - 提交成功后不会立刻判定“交易成功”
+   - 程序会按 `statusPollDelayMs / statusPollIntervalMs / statusPollTimeoutMs` 查询链上最终状态
+   - 链上成功：发送 `signal` 类 Telegram 通知（含交易哈希、成交数量、成交价）
+   - 链上失败：发送 `signal` 类 Telegram 通知（含真实链上错误原因）
+   - 若短时间内查不到最终状态：先发 pending，后台继续查询，后续补发最终结果
+   - 只有链上确认成功才会记录交易 cooldown
 
 ---
 
@@ -230,7 +263,15 @@ Telegram 目前分为 3 类事件：
     "rpcUrl": "https://fullnode.mainnet.sui.io:443",
     "slippagePercent": 0.1,
     "suiGasReserve": 0.02,
-    "maxTradePercent": 30
+    "maxTradePercent": 30,
+    "fastTrackEnabled": true,
+    "fastTrackExtraPercent": 1.5,
+    "fastTrackTradePercent": 75,
+    "fastTrackSlippageMultiplier": 0.35,
+    "fastTrackMaxSlippagePercent": 2,
+    "statusPollDelayMs": 1500,
+    "statusPollIntervalMs": 1500,
+    "statusPollTimeoutMs": 15000
   },
   "items": [
     {

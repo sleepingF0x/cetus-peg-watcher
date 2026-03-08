@@ -93,6 +93,7 @@ test('buildAlertMessage uses actual trade input and output token direction', () 
     reason: 'target: below $1.2000',
     currentPrice: 1.1,
     tradeExecutionResult: {
+      status: 'success',
       side: 'buy',
       inputCoin: '0xquote::usdc::USDC',
       outputCoin: '0x2::sui::SUI',
@@ -107,6 +108,26 @@ test('buildAlertMessage uses actual trade input and output token direction', () 
 
   assert.match(message, /BUY 1\.25 USDC → 1 SUI/);
   assert.match(message, /1\.25(?:0+)? SUI\/USDC/);
+});
+
+test('buildAlertMessage shows failed trade status with on-chain reason', () => {
+  const message = buildAlertMessage({
+    pairSymbol: 'SUI/USDC',
+    reason: 'target: above $1.2000',
+    currentPrice: 1.3,
+    tradeExecutionResult: {
+      status: 'failure',
+      side: 'sell',
+      inputCoin: '0x2::sui::SUI',
+      outputCoin: '0xquote::usdc::USDC',
+      digest: '0xfailed',
+      error: 'err_amount_out_slippage_check_failed',
+    },
+  });
+
+  assert.match(message, /Price Alert \+ Trade Failed/);
+  assert.match(message, /Status: <code>FAILED<\/code>/);
+  assert.match(message, /err_amount_out_slippage_check_failed/);
 });
 
 test('buildOpsAlertMessage prefixes the title with Ops Warning', () => {
@@ -164,4 +185,281 @@ test('processAlertActions still sends the signal alert when trade execution thro
   assert.equal(result.tradeExecuted, false);
   assert.equal(result.opsNotification?.kind, 'trade_failed');
   assert.match(sentMessages[0], /Price Alert/);
+});
+
+test('processAlertActions does not treat submitted trade with digest as executed', async () => {
+  let sentMessage = '';
+
+  const result = await processAlertActions({
+    item: {
+      id: 'sui-above',
+      baseToken: '0x2::sui::SUI',
+      quoteToken: '0xquote::usdc::USDC',
+      condition: 'above',
+      targetPrice: 1.2,
+      alertMode: 'price',
+      alertCooldownSeconds: 1800,
+      tradeCooldownSeconds: 1800,
+      tradeEnabled: true,
+    },
+    ruleKey: 'rule-1',
+    pairSymbol: 'SUI/USDC',
+    currentPrice: 1.3,
+    reason: 'target: above $1.2000',
+    tradeSide: 'sell',
+    tradeCooldownKey: 'trade-1',
+    triggerThreshold: 1.2,
+    configTradeEnabled: true,
+    configTelegram: { enabled: true, botToken: 'token', chatId: 'chat' },
+    state: { lastAlertTime: {} },
+  }, {
+    shouldAlertFn: () => true,
+    sendTelegramFn: async (_config, message) => {
+      sentMessage = message;
+      return true;
+    },
+    executeTradeFn: async () => ({
+      status: 'submitted',
+      success: false,
+      skipped: false,
+      reason: 'awaiting final confirmation',
+      side: 'sell',
+      inputCoin: '0x2::sui::SUI',
+      outputCoin: '0xquote::usdc::USDC',
+      digest: '0xsubmitted',
+    }),
+    repriceFn: async () => 1.3,
+  });
+
+  assert.equal(result.tradeExecuted, false);
+  assert.equal(result.shouldRecordTradeCooldown, false);
+  assert.equal(result.tradeExecutionResult?.status, 'submitted');
+  assert.match(sentMessage, /Trade Submitted/);
+  assert.doesNotMatch(sentMessage, /Trade Executed/);
+});
+
+test('processAlertActions sends failed trade status when chain reports failure', async () => {
+  let sentMessage = '';
+
+  const result = await processAlertActions({
+    item: {
+      id: 'sui-above',
+      baseToken: '0x2::sui::SUI',
+      quoteToken: '0xquote::usdc::USDC',
+      condition: 'above',
+      targetPrice: 1.2,
+      alertMode: 'price',
+      alertCooldownSeconds: 1800,
+      tradeCooldownSeconds: 1800,
+      tradeEnabled: true,
+    },
+    ruleKey: 'rule-1',
+    pairSymbol: 'SUI/USDC',
+    currentPrice: 1.3,
+    reason: 'target: above $1.2000',
+    tradeSide: 'sell',
+    tradeCooldownKey: 'trade-1',
+    triggerThreshold: 1.2,
+    configTradeEnabled: true,
+    configTelegram: { enabled: true, botToken: 'token', chatId: 'chat' },
+    state: { lastAlertTime: {} },
+  }, {
+    shouldAlertFn: () => true,
+    sendTelegramFn: async (_config, message) => {
+      sentMessage = message;
+      return true;
+    },
+    executeTradeFn: async () => ({
+      status: 'failure',
+      success: false,
+      skipped: false,
+      reason: 'trade failed',
+      error: 'err_amount_out_slippage_check_failed',
+      side: 'sell',
+      inputCoin: '0x2::sui::SUI',
+      outputCoin: '0xquote::usdc::USDC',
+      digest: '0xfailed',
+    }),
+    repriceFn: async () => 1.3,
+  });
+
+  assert.equal(result.tradeExecuted, false);
+  assert.equal(result.shouldRecordTradeCooldown, false);
+  assert.equal(result.tradeExecutionResult?.status, 'failure');
+  assert.match(sentMessage, /Trade Failed/);
+  assert.match(sentMessage, /err_amount_out_slippage_check_failed/);
+});
+
+test('processAlertActions only treats confirmed success as executed trade', async () => {
+  let sentMessage = '';
+
+  const result = await processAlertActions({
+    item: {
+      id: 'sui-above',
+      baseToken: '0x2::sui::SUI',
+      quoteToken: '0xquote::usdc::USDC',
+      condition: 'above',
+      targetPrice: 1.2,
+      alertMode: 'price',
+      alertCooldownSeconds: 1800,
+      tradeCooldownSeconds: 1800,
+      tradeEnabled: true,
+    },
+    ruleKey: 'rule-1',
+    pairSymbol: 'SUI/USDC',
+    currentPrice: 1.3,
+    reason: 'target: above $1.2000',
+    tradeSide: 'sell',
+    tradeCooldownKey: 'trade-1',
+    triggerThreshold: 1.2,
+    configTradeEnabled: true,
+    configTelegram: { enabled: true, botToken: 'token', chatId: 'chat' },
+    state: { lastAlertTime: {} },
+  }, {
+    shouldAlertFn: () => true,
+    sendTelegramFn: async (_config, message) => {
+      sentMessage = message;
+      return true;
+    },
+    executeTradeFn: async () => ({
+      status: 'success',
+      success: true,
+      skipped: false,
+      reason: 'trade executed',
+      side: 'sell',
+      inputCoin: '0x2::sui::SUI',
+      outputCoin: '0xquote::usdc::USDC',
+      amountIn: '1000000000',
+      amountOut: '1200000',
+      realizedPrice: 1.2,
+      digest: '0xsuccess',
+      inputDecimals: 9,
+      outputDecimals: 6,
+    }),
+    repriceFn: async () => 1.3,
+  });
+
+  assert.equal(result.tradeExecuted, true);
+  assert.equal(result.shouldRecordTradeCooldown, true);
+  assert.equal(result.tradeExecutionResult?.status, 'success');
+  assert.match(sentMessage, /Trade Executed/);
+});
+
+test('processAlertActions sends pending trade status and schedules follow-up when final state is unknown', async () => {
+  let sentMessage = '';
+  let followUpScheduled = false;
+
+  const result = await processAlertActions({
+    item: {
+      id: 'sui-above',
+      baseToken: '0x2::sui::SUI',
+      quoteToken: '0xquote::usdc::USDC',
+      condition: 'above',
+      targetPrice: 1.2,
+      alertMode: 'price',
+      alertCooldownSeconds: 1800,
+      tradeCooldownSeconds: 1800,
+      tradeEnabled: true,
+    },
+    ruleKey: 'rule-1',
+    pairSymbol: 'SUI/USDC',
+    currentPrice: 1.3,
+    reason: 'target: above $1.2000',
+    tradeSide: 'sell',
+    tradeCooldownKey: 'trade-1',
+    triggerThreshold: 1.2,
+    configTradeEnabled: true,
+    configTelegram: { enabled: true, botToken: 'token', chatId: 'chat' },
+    state: { lastAlertTime: {} },
+  }, {
+    shouldAlertFn: () => true,
+    sendTelegramFn: async (_config, message) => {
+      sentMessage = message;
+      return true;
+    },
+    executeTradeFn: async () => ({
+      status: 'unknown',
+      success: false,
+      skipped: false,
+      reason: 'trade status unknown',
+      side: 'sell',
+      inputCoin: '0x2::sui::SUI',
+      outputCoin: '0xquote::usdc::USDC',
+      amountIn: '1000000000',
+      digest: '0xpending',
+    }),
+    repriceFn: async () => 1.3,
+    scheduleTradeStatusFollowUpFn: () => {
+      followUpScheduled = true;
+    },
+  });
+
+  assert.equal(result.tradeExecuted, false);
+  assert.equal(result.shouldRecordTradeCooldown, false);
+  assert.equal(result.tradeExecutionResult?.status, 'unknown');
+  assert.equal(followUpScheduled, true);
+  assert.match(sentMessage, /Trade Pending/);
+});
+
+test('processAlertActions recomputes fast-track context from requoted price before executing trade', async () => {
+  let receivedExecutionContext: { fastTrack: boolean; overshootPercent: number } | null = null;
+
+  const result = await processAlertActions({
+    item: {
+      id: 'sui-above',
+      baseToken: '0x2::sui::SUI',
+      quoteToken: '0xquote::usdc::USDC',
+      condition: 'above',
+      avgTargetPercent: 102.5,
+      avgWindowMinutes: 15,
+      avgResumeFactor: 0.95,
+      alertMode: 'avg_percent',
+      alertCooldownSeconds: 1800,
+      tradeCooldownSeconds: 1800,
+      tradeEnabled: true,
+    },
+    ruleKey: 'rule-1',
+    pairSymbol: 'SUI/USDC',
+    currentPrice: 10.4,
+    reason: '15m avg x 102.5%: above $10.2500',
+    tradeSide: 'sell',
+    tradeCooldownKey: 'trade-1',
+    triggerThreshold: 10.25,
+    avgWindowPrice: 10,
+    configTradeEnabled: true,
+    configTrade: {
+      enabled: true,
+      fastTrackEnabled: true,
+      fastTrackExtraPercent: 1.5,
+      fastTrackTradePercent: 75,
+      slippagePercent: 0.5,
+      fastTrackSlippageMultiplier: 0.35,
+      fastTrackMaxSlippagePercent: 2,
+    },
+    configTelegram: { enabled: true, botToken: 'token', chatId: 'chat' },
+    state: { lastAlertTime: {} },
+  }, {
+    shouldAlertFn: () => true,
+    sendTelegramFn: async () => true,
+    executeTradeFn: async (executionContext) => {
+      receivedExecutionContext = executionContext;
+      return {
+        status: 'submitted',
+        success: false,
+        skipped: false,
+        reason: 'awaiting final confirmation',
+        side: 'sell',
+        inputCoin: '0x2::sui::SUI',
+        outputCoin: '0xquote::usdc::USDC',
+        digest: '0xsubmitted',
+      };
+    },
+    repriceFn: async () => 10.26,
+  });
+
+  assert.equal(result.tradeExecutionResult?.status, 'submitted');
+  assert.deepEqual(receivedExecutionContext, {
+    fastTrack: false,
+    overshootPercent: 0.1,
+  });
 });

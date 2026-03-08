@@ -1,7 +1,7 @@
 import { Config } from './config.js';
 import { getTokenPrice } from './cetus.js';
 import { loadState, migrateLegacyStateKeys, saveState, shouldAlert, recordAlert } from './state.js';
-import { executeTrade, getCurrentTradableAmount } from './trader.js';
+import { confirmTradeExecution, executeTrade, getCurrentTradableAmount, pollTradeExecutionUntilFinal } from './trader.js';
 import { sendTelegramMessage } from './telegram.js';
 import { formatPair } from './formatters.js';
 import {
@@ -11,7 +11,7 @@ import {
 } from './watcher-logic.js';
 import type { AveragePauseRule } from './watcher-logic.js';
 import { createAveragePauseRule, evaluateWatchRule } from './watcher-rules.js';
-import { buildOpsAlertMessage, processAlertActions } from './watcher-actions.js';
+import { buildAlertMessage, buildOpsAlertMessage, processAlertActions } from './watcher-actions.js';
 import { createModuleLogger, toLogError } from './logger.js';
 
 const STATE_FILE = 'state.json';
@@ -214,6 +214,8 @@ export async function startWatcher(config: Config) {
             avgWindowPrice,
             previousHitCount: consecutiveTradeHits.get(ruleKey) ?? 0,
             pauseRule: averagePauseRules.get(ruleKey),
+            tradeConfig: config.trade,
+            allowFastTrack: config.trade?.enabled === true && item.tradeEnabled !== false,
           });
 
           if (evaluation.resumed) {
@@ -240,6 +242,8 @@ export async function startWatcher(config: Config) {
                 mode: item.alertMode,
                 currentPrice: price,
                 threshold: triggerThreshold,
+                overshootPercent: evaluation.overshootPercent,
+                fastTrack: evaluation.isFastTrack,
               },
               'Rule condition triggered',
             );
@@ -315,6 +319,21 @@ export async function startWatcher(config: Config) {
             }
 
             if (hitCount < requiredConfirmations) {
+              if (evaluation.tradeConfirmedImmediately) {
+                log.info(
+                  {
+                    event: 'trade_fast_track_triggered',
+                    pair: formatPair(item.baseToken, item.quoteToken!),
+                    side: tradeSide,
+                    overshootPercent: evaluation.overshootPercent,
+                    requiredConfirmations,
+                  },
+                  'Fast-track triggered, skipping confirmation wait',
+                );
+              }
+            }
+
+            if (!evaluation.tradeConfirmedImmediately && hitCount < requiredConfirmations) {
               log.info(
                 {
                   event: 'trade_confirmation_waiting',
@@ -360,30 +379,161 @@ export async function startWatcher(config: Config) {
               tradeSide,
               tradeCooldownKey,
               triggerThreshold,
+              avgWindowPrice,
               configTradeEnabled: config.trade?.enabled === true,
+              configTrade: config.trade,
               configTelegram: config.telegram,
               state,
             }, {
               shouldAlertFn: shouldAlert,
               sendTelegramFn: sendTelegramMessage,
               repriceFn: () => getTokenPrice(group.baseToken, group.quoteToken, undefined, { forceRefresh: true }),
-              executeTradeFn: () => executeTrade(config.trade!, item, tradeSide!, {
+              executeTradeFn: (executionContext) => executeTrade(config.trade!, item, tradeSide!, {
                 lockedCycleAvailableAmount: tradeCooldownKey
                   ? tradeCycleBaseAvailable.get(tradeCooldownKey)
                   : undefined,
+                fastTrack: executionContext.fastTrack,
+                overshootPercent: executionContext.overshootPercent,
               }),
+              scheduleTradeStatusFollowUpFn: (tradeResult) => {
+                if (!tradeResult.digest || !tradeSide || !config.trade) {
+                  return;
+                }
+                const followUpDigest = tradeResult.digest;
+
+                void (async () => {
+                  const finalTradeResult = await pollTradeExecutionUntilFinal(
+                    () => confirmTradeExecution(config.trade!, {
+                      digest: followUpDigest,
+                      side: tradeSide,
+                      inputCoin: tradeResult.inputCoin,
+                      outputCoin: tradeResult.outputCoin,
+                      amountIn: tradeResult.amountIn,
+                    }),
+                    config.trade!.statusPollIntervalMs ?? 1500,
+                  );
+
+                  const finalTradeExecutionResult = {
+                    status: finalTradeResult.status as 'success' | 'failure',
+                    side: finalTradeResult.side,
+                    inputCoin: finalTradeResult.inputCoin,
+                    outputCoin: finalTradeResult.outputCoin,
+                    amountIn: finalTradeResult.amountIn,
+                    amountOut: finalTradeResult.amountOut,
+                    realizedPrice: finalTradeResult.realizedPrice,
+                    digest: finalTradeResult.digest ?? followUpDigest,
+                    inputDecimals: finalTradeResult.inputDecimals,
+                    outputDecimals: finalTradeResult.outputDecimals,
+                    error: finalTradeResult.error,
+                  };
+
+                  if (finalTradeResult.status === 'success') {
+                    log.info(
+                      {
+                        event: 'trade_confirmed_success',
+                        side: tradeSide,
+                        pair: formatPair(item.baseToken, item.quoteToken!),
+                        digest: followUpDigest,
+                      },
+                      'Trade confirmed on-chain',
+                    );
+                  } else {
+                    log.warn(
+                      {
+                        event: 'trade_confirmed_failure',
+                        side: tradeSide,
+                        pair: formatPair(item.baseToken, item.quoteToken!),
+                        digest: followUpDigest,
+                        error: finalTradeResult.error,
+                      },
+                      'Trade failed on-chain',
+                    );
+                  }
+
+                  const followUpMessage = buildAlertMessage({
+                    pairSymbol: formatPair(item.baseToken, item.quoteToken!),
+                    reason,
+                    currentPrice: price,
+                    tradeExecutionResult: finalTradeExecutionResult,
+                  });
+                  const followUpSent = await sendTelegramMessage(config.telegram, followUpMessage);
+
+                  if (followUpSent) {
+                    log.info(
+                      {
+                        event: 'telegram_alert_sent',
+                        pair: formatPair(item.baseToken, item.quoteToken!),
+                        ruleKey,
+                        digest: followUpDigest,
+                        followUp: true,
+                      },
+                      'Telegram follow-up alert sent',
+                    );
+                  } else {
+                    log.error(
+                      {
+                        event: 'telegram_alert_failed',
+                        pair: formatPair(item.baseToken, item.quoteToken!),
+                        ruleKey,
+                        digest: followUpDigest,
+                        followUp: true,
+                      },
+                      'Telegram follow-up alert failed',
+                    );
+                  }
+
+                  if (finalTradeResult.status === 'success' && tradeCooldownKey) {
+                    recordAlert(tradeCooldownKey, state);
+                    saveState(STATE_FILE, state);
+                  }
+                })().catch((error: unknown) => {
+                  log.error(
+                    {
+                      event: 'trade_follow_up_error',
+                      pair: formatPair(item.baseToken, item.quoteToken!),
+                      ruleKey,
+                      digest: followUpDigest,
+                      err: toLogError(error),
+                    },
+                    'Error while resolving background trade follow-up',
+                  );
+                });
+              },
             });
 
-            if (actionResult.tradeExecuted && actionResult.tradeExecutionResult?.digest) {
-              log.info(
-                {
-                  event: 'trade_executed',
-                  side: tradeSide,
-                  pair: formatPair(item.baseToken, item.quoteToken!),
-                  digest: actionResult.tradeExecutionResult.digest,
-                },
-                'Trade executed',
-              );
+            if (actionResult.tradeExecutionResult?.digest) {
+              if (actionResult.tradeExecutionResult.status === 'success') {
+                log.info(
+                  {
+                    event: 'trade_confirmed_success',
+                    side: tradeSide,
+                    pair: formatPair(item.baseToken, item.quoteToken!),
+                    digest: actionResult.tradeExecutionResult.digest,
+                  },
+                  'Trade confirmed on-chain',
+                );
+              } else if (actionResult.tradeExecutionResult.status === 'failure') {
+                log.warn(
+                  {
+                    event: 'trade_confirmed_failure',
+                    side: tradeSide,
+                    pair: formatPair(item.baseToken, item.quoteToken!),
+                    digest: actionResult.tradeExecutionResult.digest,
+                    error: actionResult.tradeExecutionResult.error,
+                  },
+                  'Trade failed on-chain',
+                );
+              } else if (actionResult.tradeExecutionResult.status === 'unknown') {
+                log.warn(
+                  {
+                    event: 'trade_status_unknown',
+                    side: tradeSide,
+                    pair: formatPair(item.baseToken, item.quoteToken!),
+                    digest: actionResult.tradeExecutionResult.digest,
+                  },
+                  'Trade status unknown, follow-up scheduled',
+                );
+              }
             }
 
             if (actionResult.opsNotification) {

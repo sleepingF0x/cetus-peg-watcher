@@ -65,3 +65,71 @@ test('loadConfig preserves valid explicit item ids', () => {
   const config = loadConfig(filePath);
   assert.equal(config.items[0].id, 'sui-below');
 });
+
+test('loadConfig applies fast-track and status polling defaults', () => {
+  const filePath = writeTempConfig({
+    telegram: { enabled: false },
+    trade: {
+      enabled: false,
+    },
+    items: [
+      {
+        id: 'sui-below',
+        baseToken: '0x2::sui::SUI',
+        condition: 'below',
+        targetPrice: 1.2,
+      },
+    ],
+  });
+
+  const config = loadConfig(filePath);
+
+  assert.equal(config.trade?.fastTrackEnabled, true);
+  assert.equal(config.trade?.fastTrackExtraPercent, 1.5);
+  assert.equal(config.trade?.fastTrackTradePercent, 75);
+  assert.equal(config.trade?.fastTrackSlippageMultiplier, 0.35);
+  assert.equal(config.trade?.fastTrackMaxSlippagePercent, 2);
+  assert.equal(config.trade?.statusPollDelayMs, 1500);
+  assert.equal(config.trade?.statusPollIntervalMs, 1500);
+  assert.equal(config.trade?.statusPollTimeoutMs, 15000);
+});
+
+test('loadConfig throws when fast-track percent is out of range', () => {
+  const filePath = writeTempConfig({
+    telegram: { enabled: false },
+    trade: {
+      enabled: false,
+      fastTrackTradePercent: 120,
+    },
+    items: [
+      {
+        id: 'sui-below',
+        baseToken: '0x2::sui::SUI',
+        condition: 'below',
+        targetPrice: 1.2,
+      },
+    ],
+  });
+
+  assert.throws(() => loadConfig(filePath), /trade\.fastTrackTradePercent must be a number between 0 and 100/);
+});
+
+test('loadConfig throws when status polling timeout is not positive', () => {
+  const filePath = writeTempConfig({
+    telegram: { enabled: false },
+    trade: {
+      enabled: false,
+      statusPollTimeoutMs: 0,
+    },
+    items: [
+      {
+        id: 'sui-below',
+        baseToken: '0x2::sui::SUI',
+        condition: 'below',
+        targetPrice: 1.2,
+      },
+    ],
+  });
+
+  assert.throws(() => loadConfig(filePath), /trade\.statusPollTimeoutMs must be a positive integer/);
+});

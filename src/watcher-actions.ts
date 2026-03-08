@@ -1,6 +1,7 @@
-import type { WatchItem, TelegramConfig } from './config.js';
+import type { TradeConfig, WatchItem, TelegramConfig } from './config.js';
 import type { AlertState } from './state.js';
 import type { TradeExecutionResult, TradeSide } from './trader.js';
+import { resolveFastTrackContext } from './watcher-rules.js';
 import {
   calculateExecutedPrice,
   formatAmount,
@@ -22,6 +23,7 @@ export interface OpsAlertMessageInput {
 }
 
 export interface TradeExecutionLike {
+  status: 'submitted' | 'success' | 'failure' | 'unknown';
   side: string;
   inputCoin: string;
   outputCoin: string;
@@ -31,6 +33,7 @@ export interface TradeExecutionLike {
   digest?: string;
   inputDecimals?: number;
   outputDecimals?: number;
+  error?: string;
 }
 
 interface ProcessAlertActionsInput {
@@ -42,7 +45,9 @@ interface ProcessAlertActionsInput {
   tradeSide: TradeSide | null;
   tradeCooldownKey: string | null;
   triggerThreshold: number | null;
+  avgWindowPrice?: number | null;
   configTradeEnabled: boolean;
+  configTrade?: TradeConfig;
   configTelegram: TelegramConfig | undefined;
   state: AlertState;
 }
@@ -50,8 +55,9 @@ interface ProcessAlertActionsInput {
 interface ActionDependencies {
   shouldAlertFn: (tokenId: string, cooldownSeconds: number, state: AlertState) => boolean;
   sendTelegramFn: (config: TelegramConfig | undefined, message: string) => Promise<boolean>;
-  executeTradeFn: () => Promise<TradeExecutionResult>;
+  executeTradeFn: (executionContext: { fastTrack: boolean; overshootPercent: number }) => Promise<TradeExecutionResult>;
   repriceFn: () => Promise<number | null>;
+  scheduleTradeStatusFollowUpFn?: (tradeResult: TradeExecutionLike) => void;
 }
 
 export interface ProcessAlertActionsResult {
@@ -68,8 +74,20 @@ export interface ProcessAlertActionsResult {
 }
 
 export function buildAlertMessage(input: AlertMessageInput): string {
+  const tradeTitleByStatus: Record<TradeExecutionLike['status'], string> = {
+    submitted: '🚨 <b>Price Alert + Trade Submitted</b>',
+    success: '🚨 <b>Price Alert + Trade Executed</b>',
+    failure: '🚨 <b>Price Alert + Trade Failed</b>',
+    unknown: '🚨 <b>Price Alert + Trade Pending</b>',
+  };
+  const tradeStatusLabel: Record<TradeExecutionLike['status'], string> = {
+    submitted: 'SUBMITTED',
+    success: 'SUCCESS',
+    failure: 'FAILED',
+    unknown: 'PENDING',
+  };
   const messageLines: string[] = [
-    input.tradeExecutionResult ? '🚨 <b>Price Alert + Trade Executed</b>' : '🚨 <b>Price Alert</b>',
+    input.tradeExecutionResult ? tradeTitleByStatus[input.tradeExecutionResult.status] : '🚨 <b>Price Alert</b>',
     `Pair: <code>${input.pairSymbol}</code>`,
     `Trigger: <code>${input.reason}</code>`,
     `Current: <code>$${input.currentPrice.toFixed(6)}</code>`,
@@ -78,20 +96,29 @@ export function buildAlertMessage(input: AlertMessageInput): string {
   if (input.tradeExecutionResult) {
     const inputSymbol = getTokenSymbol(input.tradeExecutionResult.inputCoin);
     const outputSymbol = getTokenSymbol(input.tradeExecutionResult.outputCoin);
-    const inputDecimals = input.tradeExecutionResult.inputDecimals ?? 6;
-    const outputDecimals = input.tradeExecutionResult.outputDecimals ?? 6;
-    const amountInFormatted = formatAmount(input.tradeExecutionResult.amountIn, inputDecimals, 4);
-    const amountOutFormatted = formatAmount(input.tradeExecutionResult.amountOut, outputDecimals, 4);
-    const executedPrice = input.tradeExecutionResult.realizedPrice ?? calculateExecutedPrice(
-      input.tradeExecutionResult.amountIn,
-      input.tradeExecutionResult.amountOut,
-      inputDecimals,
-      outputDecimals,
-    );
-
     messageLines.push('');
-    messageLines.push(`Trade: <code>${input.tradeExecutionResult.side.toUpperCase()} ${amountInFormatted} ${inputSymbol} → ${amountOutFormatted} ${outputSymbol}</code>`);
-    messageLines.push(`Executed Price: <code>${formatPrice(executedPrice)} ${outputSymbol}/${inputSymbol}</code>`);
+    messageLines.push(`Status: <code>${tradeStatusLabel[input.tradeExecutionResult.status]}</code>`);
+
+    if (input.tradeExecutionResult.status === 'success') {
+      const inputDecimals = input.tradeExecutionResult.inputDecimals ?? 6;
+      const outputDecimals = input.tradeExecutionResult.outputDecimals ?? 6;
+      const amountInFormatted = formatAmount(input.tradeExecutionResult.amountIn, inputDecimals, 4);
+      const amountOutFormatted = formatAmount(input.tradeExecutionResult.amountOut, outputDecimals, 4);
+      const executedPrice = input.tradeExecutionResult.realizedPrice ?? calculateExecutedPrice(
+        input.tradeExecutionResult.amountIn,
+        input.tradeExecutionResult.amountOut,
+        inputDecimals,
+        outputDecimals,
+      );
+
+      messageLines.push(`Trade: <code>${input.tradeExecutionResult.side.toUpperCase()} ${amountInFormatted} ${inputSymbol} → ${amountOutFormatted} ${outputSymbol}</code>`);
+      messageLines.push(`Executed Price: <code>${formatPrice(executedPrice)} ${outputSymbol}/${inputSymbol}</code>`);
+    } else if (input.tradeExecutionResult.status === 'failure' && input.tradeExecutionResult.error) {
+      messageLines.push(`Reason: <code>${input.tradeExecutionResult.error}</code>`);
+    } else {
+      messageLines.push(`Trade: <code>${input.tradeExecutionResult.side.toUpperCase()} ${inputSymbol} → ${outputSymbol}</code>`);
+    }
+
     if (input.tradeExecutionResult.digest) {
       messageLines.push(`Tx: <code>${input.tradeExecutionResult.digest}</code>`);
     }
@@ -143,9 +170,22 @@ export async function processAlertActions(
 
       if (stillValid) {
         try {
-          const tradeResult = await deps.executeTradeFn();
-          if (tradeResult.success) {
+          const executionContext = resolveFastTrackContext({
+            item: input.item,
+            price: requotedPrice,
+            avgWindowPrice: input.avgWindowPrice ?? null,
+            triggerThreshold: input.triggerThreshold,
+            tradeConfig: input.configTrade,
+            allowFastTrack: input.configTradeEnabled,
+            isConditionMet: true,
+          });
+          const tradeResult = await deps.executeTradeFn({
+            fastTrack: executionContext.isFastTrack,
+            overshootPercent: executionContext.overshootPercent,
+          });
+          if (!tradeResult.skipped && tradeResult.status !== 'skipped') {
             tradeExecutionResult = {
+              status: tradeResult.status,
               side: tradeResult.side,
               inputCoin: tradeResult.inputCoin,
               outputCoin: tradeResult.outputCoin,
@@ -155,8 +195,12 @@ export async function processAlertActions(
               digest: tradeResult.digest,
               inputDecimals: tradeResult.inputDecimals,
               outputDecimals: tradeResult.outputDecimals,
+              error: tradeResult.error,
             };
-            shouldRecordTradeCooldown = true;
+            shouldRecordTradeCooldown = tradeResult.status === 'success';
+            if (tradeResult.status === 'unknown') {
+              deps.scheduleTradeStatusFollowUpFn?.(tradeExecutionResult);
+            }
           }
         } catch (error: unknown) {
           const message = error instanceof Error ? error.message : String(error);
@@ -187,7 +231,7 @@ export async function processAlertActions(
 
   return {
     alertSent,
-    tradeExecuted: tradeExecutionResult !== null,
+    tradeExecuted: tradeExecutionResult?.status === 'success',
     shouldRecordAlert: alertSent,
     shouldRecordTradeCooldown: alertSent && shouldRecordTradeCooldown,
     tradeExecutionResult,

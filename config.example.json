@@ -11,7 +11,15 @@
     "rpcUrl": "https://fullnode.mainnet.sui.io:443",
     "slippagePercent": 0.1,
     "suiGasReserve": 0.02,
-    "maxTradePercent": 30
+    "maxTradePercent": 30,
+    "fastTrackEnabled": true,
+    "fastTrackExtraPercent": 1.5,
+    "fastTrackTradePercent": 75,
+    "fastTrackSlippageMultiplier": 0.35,
+    "fastTrackMaxSlippagePercent": 2,
+    "statusPollDelayMs": 1500,
+    "statusPollIntervalMs": 1500,
+    "statusPollTimeoutMs": 15000
   },
   "items": [
     {

@@ -16,8 +16,10 @@ const TRADE_PERCENT_DENOMINATOR = 100 * TRADE_PERCENT_SCALE;
 const log = createModuleLogger('Trade');
 
 export type TradeSide = 'buy' | 'sell';
+export type TradeExecutionStatus = 'skipped' | 'submitted' | 'success' | 'failure' | 'unknown';
 
 export interface TradeExecutionResult {
+  status: TradeExecutionStatus;
   success: boolean;
   skipped: boolean;
   reason: string;
@@ -30,10 +32,13 @@ export interface TradeExecutionResult {
   digest?: string;
   inputDecimals?: number;
   outputDecimals?: number;
+  error?: string;
 }
 
 interface ExecuteTradeOptions {
   lockedCycleAvailableAmount?: string;
+  fastTrack?: boolean;
+  overshootPercent?: number;
 }
 
 interface TraderContext {
@@ -55,11 +60,34 @@ interface BalanceChange {
 }
 
 interface TransactionBlockResult {
+  effects?: {
+    status?: {
+      status?: string;
+      error?: string;
+    };
+  };
   balanceChanges?: BalanceChange[];
 }
 
 interface RpcResponse<T> {
   result?: T;
+}
+
+function delay(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+export async function pollTradeExecutionUntilFinal(
+  pollFn: () => Promise<TradeExecutionResult>,
+  retryDelayMs: number,
+): Promise<TradeExecutionResult> {
+  while (true) {
+    const result = await pollFn();
+    if (result.status !== 'unknown') {
+      return result;
+    }
+    await delay(retryDelayMs);
+  }
 }
 
 function loadKeypairFromMnemonic(mnemonicFile: string, derivationPath: string): Ed25519Keypair {
@@ -207,6 +235,72 @@ async function getExecutionMetrics(
   };
 }
 
+async function getTransactionChainStatus(
+  rpcUrl: string,
+  digest: string,
+): Promise<{ status: 'success' | 'failure' | 'unknown'; error?: string }> {
+  const response = await axios.post<RpcResponse<TransactionBlockResult>>(rpcUrl, {
+    jsonrpc: '2.0',
+    id: 1,
+    method: 'sui_getTransactionBlock',
+    params: [
+      digest,
+      {
+        showEffects: true,
+      },
+    ],
+  }, {
+    timeout: 20000,
+  });
+
+  const status = response.data.result?.effects?.status?.status;
+  const error = response.data.result?.effects?.status?.error;
+
+  if (status === 'success') {
+    return { status: 'success' };
+  }
+
+  if (status === 'failure') {
+    return { status: 'failure', error };
+  }
+
+  return { status: 'unknown' };
+}
+
+async function waitForFinalTransactionStatus(
+  tradeConfig: TradeConfig,
+  digest: string,
+): Promise<{ status: 'success' | 'failure' | 'unknown'; error?: string }> {
+  const delayMs = tradeConfig.statusPollDelayMs ?? 1500;
+  const intervalMs = tradeConfig.statusPollIntervalMs ?? 1500;
+  const timeoutMs = tradeConfig.statusPollTimeoutMs ?? 15000;
+  const startedAt = Date.now();
+
+  await delay(delayMs);
+
+  while (Date.now() - startedAt <= timeoutMs) {
+    try {
+      const result = await getTransactionChainStatus(tradeConfig.rpcUrl!, digest);
+      if (result.status !== 'unknown') {
+        return result;
+      }
+    } catch (error: unknown) {
+      log.warn(
+        {
+          event: 'trade_status_poll_failed',
+          digest,
+          err: toLogError(error),
+        },
+        'Unable to poll trade status',
+      );
+    }
+
+    await delay(intervalMs);
+  }
+
+  return { status: 'unknown' };
+}
+
 function isSuiCoinType(coinType: string): boolean {
   return coinType.toLowerCase().endsWith('::sui::sui');
 }
@@ -222,9 +316,38 @@ function calculateTradableAmount(totalBalance: bigint, inputCoin: string, tradeC
   return tradableAmount;
 }
 
-function calculateAmountByPercent(baseAmount: bigint, tradeConfig: TradeConfig): bigint {
-  const maxTradePercentScaled = Math.floor((tradeConfig.maxTradePercent || 100) * TRADE_PERCENT_SCALE);
-  return (baseAmount * BigInt(maxTradePercentScaled)) / BigInt(TRADE_PERCENT_DENOMINATOR);
+export function resolveTradePercent(
+  tradeConfig: TradeConfig,
+  options?: Pick<ExecuteTradeOptions, 'fastTrack'>,
+): number {
+  if (options?.fastTrack) {
+    return tradeConfig.fastTrackTradePercent || tradeConfig.maxTradePercent || 100;
+  }
+
+  return tradeConfig.maxTradePercent || 100;
+}
+
+export function resolveTradeSlippagePercent(
+  tradeConfig: TradeConfig,
+  options?: Pick<ExecuteTradeOptions, 'fastTrack' | 'overshootPercent'>,
+): number {
+  const baseSlippagePercent = tradeConfig.slippagePercent || 0.5;
+  if (!options?.fastTrack) {
+    return baseSlippagePercent;
+  }
+
+  const fastTrackExtraPercent = tradeConfig.fastTrackExtraPercent || 0;
+  const overshootPercent = options.overshootPercent || 0;
+  const extraOvershootPercent = Math.max(0, overshootPercent - fastTrackExtraPercent);
+  const dynamicSlippage = baseSlippagePercent + (extraOvershootPercent * (tradeConfig.fastTrackSlippageMultiplier || 0));
+  const cappedSlippage = Math.min(dynamicSlippage, tradeConfig.fastTrackMaxSlippagePercent || dynamicSlippage);
+
+  return Math.round(cappedSlippage * 1_000_000) / 1_000_000;
+}
+
+function calculateAmountByPercent(baseAmount: bigint, tradePercent: number): bigint {
+  const tradePercentScaled = Math.floor(tradePercent * TRADE_PERCENT_SCALE);
+  return (baseAmount * BigInt(tradePercentScaled)) / BigInt(TRADE_PERCENT_DENOMINATOR);
 }
 
 export async function getCurrentTradableAmount(
@@ -271,6 +394,95 @@ function getTraderContext(tradeConfig: TradeConfig): TraderContext {
   return cachedContext;
 }
 
+export async function confirmTradeExecution(
+  tradeConfig: TradeConfig,
+  trade: {
+    digest: string;
+    side: TradeSide;
+    inputCoin: string;
+    outputCoin: string;
+    amountIn?: string;
+  },
+): Promise<TradeExecutionResult> {
+  const context = getTraderContext(tradeConfig);
+  const finalStatus = await waitForFinalTransactionStatus(tradeConfig, trade.digest);
+
+  if (finalStatus.status === 'failure') {
+    return {
+      status: 'failure',
+      success: false,
+      skipped: false,
+      reason: 'trade failed',
+      error: finalStatus.error,
+      side: trade.side,
+      inputCoin: trade.inputCoin,
+      outputCoin: trade.outputCoin,
+      amountIn: trade.amountIn,
+      digest: trade.digest,
+    };
+  }
+
+  if (finalStatus.status === 'unknown') {
+    return {
+      status: 'unknown',
+      success: false,
+      skipped: false,
+      reason: 'trade status unknown',
+      side: trade.side,
+      inputCoin: trade.inputCoin,
+      outputCoin: trade.outputCoin,
+      amountIn: trade.amountIn,
+      digest: trade.digest,
+    };
+  }
+
+  let amountOut: string | undefined;
+  let realizedPrice: number | undefined;
+  let inputDecimals: number | undefined;
+  let outputDecimals: number | undefined;
+
+  try {
+    const executionMetrics = await getExecutionMetrics(
+      tradeConfig.rpcUrl!,
+      trade.digest,
+      context.walletAddress,
+      trade.inputCoin,
+      trade.outputCoin,
+    );
+    amountOut = executionMetrics.amountOut;
+    realizedPrice = executionMetrics.realizedPrice;
+    inputDecimals = executionMetrics.inputDecimals;
+    outputDecimals = executionMetrics.outputDecimals;
+  } catch (error: unknown) {
+    log.warn(
+      {
+        event: 'trade_metrics_fetch_failed',
+        pair: formatPair(trade.inputCoin, trade.outputCoin),
+        side: trade.side,
+        digest: trade.digest,
+        err: toLogError(error),
+      },
+      'Unable to fetch trade metrics',
+    );
+  }
+
+  return {
+    status: 'success',
+    success: true,
+    skipped: false,
+    reason: 'trade executed',
+    side: trade.side,
+    inputCoin: trade.inputCoin,
+    outputCoin: trade.outputCoin,
+    amountIn: trade.amountIn,
+    amountOut,
+    realizedPrice,
+    digest: trade.digest,
+    inputDecimals,
+    outputDecimals,
+  };
+}
+
 export async function executeTrade(
   tradeConfig: TradeConfig,
   item: WatchItem,
@@ -291,6 +503,7 @@ export async function executeTrade(
       'Skip trade: trade disabled',
     );
     return {
+      status: 'skipped',
       success: false,
       skipped: true,
       reason: 'trade disabled',
@@ -312,7 +525,8 @@ export async function executeTrade(
     ? parseSignedAmount(options.lockedCycleAvailableAmount)
     : currentTradableAmount;
 
-  let tradableAmount = calculateAmountByPercent(cycleBaseAmount, tradeConfig);
+  const tradePercent = resolveTradePercent(tradeConfig, options);
+  let tradableAmount = calculateAmountByPercent(cycleBaseAmount, tradePercent);
 
   if (options?.lockedCycleAvailableAmount && tradableAmount > currentTradableAmount) {
     log.info(
@@ -325,6 +539,7 @@ export async function executeTrade(
       'Skip trade: insufficient tradable balance for locked cycle amount',
     );
     return {
+      status: 'skipped',
       success: false,
       skipped: true,
       reason: 'insufficient tradable balance for locked cycle amount',
@@ -346,6 +561,7 @@ export async function executeTrade(
       'Skip trade: insufficient tradable balance',
     );
     return {
+      status: 'skipped',
       success: false,
       skipped: true,
       reason: 'insufficient tradable balance',
@@ -374,6 +590,7 @@ export async function executeTrade(
       'Skip trade: no executable route',
     );
     return {
+      status: 'skipped',
       success: false,
       skipped: true,
       reason: 'no executable route',
@@ -388,7 +605,7 @@ export async function executeTrade(
   await context.aggregator.fastRouterSwap({
     router: route,
     txb,
-    slippage: (tradeConfig.slippagePercent || 0.5) / 100,
+    slippage: resolveTradeSlippagePercent(tradeConfig, options) / 100,
   });
 
   const execution = await context.aggregator.sendTransaction(txb, context.keypair);
@@ -405,50 +622,24 @@ export async function executeTrade(
       'Submitted trade transaction',
     );
   }
-  let amountOut: string | undefined;
-  let realizedPrice: number | undefined;
-  let inputDecimals: number | undefined;
-  let outputDecimals: number | undefined;
-
-  if (digest) {
-    try {
-      const executionMetrics = await getExecutionMetrics(
-        tradeConfig.rpcUrl!,
-        digest,
-        context.walletAddress,
-        inputCoin,
-        outputCoin,
-      );
-      amountOut = executionMetrics.amountOut;
-      realizedPrice = executionMetrics.realizedPrice;
-      inputDecimals = executionMetrics.inputDecimals;
-      outputDecimals = executionMetrics.outputDecimals;
-    } catch (error: unknown) {
-      log.warn(
-        {
-          event: 'trade_metrics_fetch_failed',
-          pair: formatPair(inputCoin, outputCoin),
-          side,
-          digest,
-          err: toLogError(error),
-        },
-        'Unable to fetch trade metrics',
-      );
-    }
+  if (!digest) {
+    return {
+      status: 'unknown',
+      success: false,
+      skipped: false,
+      reason: 'trade submitted without digest',
+      side,
+      inputCoin,
+      outputCoin,
+      amountIn: tradableAmount.toString(),
+    };
   }
 
-  return {
-    success: true,
-    skipped: false,
-    reason: 'trade executed',
+  return confirmTradeExecution(tradeConfig, {
+    digest,
     side,
     inputCoin,
     outputCoin,
     amountIn: tradableAmount.toString(),
-    amountOut,
-    realizedPrice,
-    digest,
-    inputDecimals,
-    outputDecimals,
-  };
+  });
 }
