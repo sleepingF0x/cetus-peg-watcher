@@ -5,6 +5,7 @@ import { resolveFastTrackContext } from './watcher-rules.js';
 import {
   calculateExecutedPrice,
   formatAmount,
+  formatDisplayAmount,
   formatPrice,
   getTokenSymbol,
 } from './formatters.js';
@@ -13,6 +14,7 @@ export interface AlertMessageInput {
   pairSymbol: string;
   reason: string;
   currentPrice: number;
+  quotedBaseAmount: number;
   tradeExecutionResult: TradeExecutionLike | null;
 }
 
@@ -41,6 +43,7 @@ interface ProcessAlertActionsInput {
   ruleKey: string;
   pairSymbol: string;
   currentPrice: number;
+  quotedBaseAmount: number;
   reason: string;
   tradeSide: TradeSide | null;
   tradeCooldownKey: string | null;
@@ -74,6 +77,7 @@ export interface ProcessAlertActionsResult {
 }
 
 export function buildAlertMessage(input: AlertMessageInput): string {
+  const baseSymbol = input.pairSymbol.split('/')[0] || input.pairSymbol;
   const tradeTitleByStatus: Record<TradeExecutionLike['status'], string> = {
     submitted: '🚨 <b>Price Alert + Trade Submitted</b>',
     success: '🚨 <b>Price Alert + Trade Executed</b>',
@@ -90,7 +94,8 @@ export function buildAlertMessage(input: AlertMessageInput): string {
     input.tradeExecutionResult ? tradeTitleByStatus[input.tradeExecutionResult.status] : '🚨 <b>Price Alert</b>',
     `Pair: <code>${input.pairSymbol}</code>`,
     `Trigger: <code>${input.reason}</code>`,
-    `Current: <code>$${input.currentPrice.toFixed(6)}</code>`,
+    `Quoted Price: <code>$${input.currentPrice.toFixed(6)}</code>`,
+    `Quoted Size: <code>${formatDisplayAmount(input.quotedBaseAmount)} ${baseSymbol}</code>`,
   ];
 
   if (input.tradeExecutionResult) {
@@ -225,6 +230,7 @@ export async function processAlertActions(
     pairSymbol: input.pairSymbol,
     reason: input.reason,
     currentPrice: input.currentPrice,
+    quotedBaseAmount: input.quotedBaseAmount,
     tradeExecutionResult,
   });
   const alertSent = await deps.sendTelegramFn(input.configTelegram, message);

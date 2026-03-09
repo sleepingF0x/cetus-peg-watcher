@@ -1,5 +1,6 @@
 import axios from 'axios';
 import { getCoinDecimals } from './coin-metadata.js';
+import { scaleHumanAmountToAtomicAmount } from './formatters.js';
 import { createModuleLogger, toLogError } from './logger.js';
 
 export interface CetusQuoteResponse {
@@ -27,13 +28,17 @@ const inFlightPriceRequests = new Map<string, Promise<number | null>>();
 export async function getTokenPrice(
   baseToken: string,
   quoteToken: string,
-  amount?: string,
+  amount?: string | number | bigint,
   options?: {
     forceRefresh?: boolean;
+    amountMode?: 'raw' | 'human';
   }
 ): Promise<number | null> {
   const forceRefresh = options?.forceRefresh === true;
-  const normalizedAmountKey = amount && amount.length > 0 ? amount : DEFAULT_QUERY_AMOUNT_KEY;
+  const amountMode = options?.amountMode || 'raw';
+  const normalizedAmountKey = amount !== undefined && amount !== null
+    ? `${amountMode}:${String(amount)}`
+    : DEFAULT_QUERY_AMOUNT_KEY;
   const cacheKey = `${baseToken}::${quoteToken}::${normalizedAmountKey}`;
   const now = Date.now();
   if (!forceRefresh) {
@@ -75,7 +80,11 @@ export async function getTokenPrice(
         continue;
       }
 
-      const queryAmount = amount || Math.pow(10, baseDecimals).toString();
+      const queryAmount = amount === undefined || amount === null
+        ? Math.pow(10, baseDecimals).toString()
+        : amountMode === 'human'
+          ? scaleHumanAmountToAtomicAmount(String(amount), baseDecimals).toString()
+          : String(amount);
 
       const response = await axios.get<CetusQuoteResponse>(CETUS_API_URL, {
         params: {

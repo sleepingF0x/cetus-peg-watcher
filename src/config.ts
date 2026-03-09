@@ -6,6 +6,7 @@ export interface WatchItem {
   targetPrice?: number;
   condition: 'above' | 'below';
   quoteToken?: string;
+  priceQueryMinBaseAmount?: number;
   pollInterval?: number;
   cooldownSeconds?: number;
   alertCooldownSeconds?: number;
@@ -175,6 +176,9 @@ export function loadConfig(filePath: string): Config {
     if (item.avgResumeFactor !== undefined && (typeof item.avgResumeFactor !== 'number' || item.avgResumeFactor < 0 || item.avgResumeFactor > 1)) {
       throw new Error(`item[${index}].avgResumeFactor must be a number between 0 and 1`);
     }
+    if (item.priceQueryMinBaseAmount !== undefined && (typeof item.priceQueryMinBaseAmount !== 'number' || item.priceQueryMinBaseAmount <= 0)) {
+      throw new Error(`item[${index}].priceQueryMinBaseAmount must be a positive number`);
+    }
     if (item.cooldownSeconds !== undefined && (typeof item.cooldownSeconds !== 'number' || item.cooldownSeconds <= 0)) {
       throw new Error(`item[${index}].cooldownSeconds must be a positive number`);
     }
@@ -201,6 +205,7 @@ export function loadConfig(filePath: string): Config {
     return {
       ...item,
       quoteToken: item.quoteToken || DEFAULT_QUOTE_TOKEN,
+      priceQueryMinBaseAmount: item.priceQueryMinBaseAmount ?? 1,
       pollInterval: item.pollInterval || DEFAULT_POLL_INTERVAL,
       alertCooldownSeconds: item.alertCooldownSeconds || item.cooldownSeconds || DEFAULT_ALERT_COOLDOWN_SECONDS,
       tradeCooldownSeconds: item.tradeCooldownSeconds || item.cooldownSeconds || DEFAULT_TRADE_COOLDOWN_SECONDS,

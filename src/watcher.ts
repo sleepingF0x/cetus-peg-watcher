@@ -33,6 +33,7 @@ interface WatchGroup {
   groupKey: string;
   baseToken: string;
   quoteToken: string;
+  queryBaseAmount: number;
   pollIntervalMs: number;
   maxAverageWindowMs: number;
   items: GroupedWatchItem[];
@@ -130,7 +131,8 @@ export async function startWatcher(config: Config) {
   config.items.forEach((item, index) => {
     const pollIntervalMs = (item.pollInterval || 30) * 1000;
     const pairKey = `${item.baseToken}::${item.quoteToken}`;
-    const groupKey = `${pairKey}::${pollIntervalMs}`;
+    const queryBaseAmount = item.priceQueryMinBaseAmount ?? 1;
+    const groupKey = `${pairKey}::${pollIntervalMs}::${queryBaseAmount}`;
     const averageWindowMs = (item.avgWindowMinutes || 10) * 60 * 1000;
     const ruleKey = createAlertRuleKey(item.id);
 
@@ -147,6 +149,7 @@ export async function startWatcher(config: Config) {
       groupKey,
       baseToken: item.baseToken,
       quoteToken: item.quoteToken!,
+      queryBaseAmount,
       pollIntervalMs,
       maxAverageWindowMs: averageWindowMs,
       items: [{ item, ruleKey, averageWindowMs }],
@@ -156,7 +159,9 @@ export async function startWatcher(config: Config) {
   for (const group of watchGroups.values()) {
     const check = createSerializedPollRunner(async () => {
       try {
-        const price = await getTokenPrice(group.baseToken, group.quoteToken);
+        const price = await getTokenPrice(group.baseToken, group.quoteToken, group.queryBaseAmount, {
+          amountMode: 'human',
+        });
 
         if (price === null) {
           log.error(
@@ -198,6 +203,7 @@ export async function startWatcher(config: Config) {
             event: 'monitor_tick',
             pair: formatPair(group.baseToken, group.quoteToken),
             currentPrice: price,
+            quotedBaseAmount: group.queryBaseAmount,
             windows: averageText,
             samples: history.length,
             rules: group.items.length,
@@ -241,6 +247,7 @@ export async function startWatcher(config: Config) {
                 condition: item.condition,
                 mode: item.alertMode,
                 currentPrice: price,
+                quotedBaseAmount: item.priceQueryMinBaseAmount,
                 threshold: triggerThreshold,
                 overshootPercent: evaluation.overshootPercent,
                 fastTrack: evaluation.isFastTrack,
@@ -361,6 +368,7 @@ export async function startWatcher(config: Config) {
                 event: 'alert_triggered',
                 pair: formatPair(item.baseToken, item.quoteToken!),
                 currentPrice: price,
+                quotedBaseAmount: item.priceQueryMinBaseAmount,
                 cooldownSeconds: item.alertCooldownSeconds || 1800,
                 ruleKey,
               },
@@ -375,6 +383,7 @@ export async function startWatcher(config: Config) {
               ruleKey,
               pairSymbol: formatPair(item.baseToken, item.quoteToken!),
               currentPrice: price,
+              quotedBaseAmount: item.priceQueryMinBaseAmount || 1,
               reason,
               tradeSide,
               tradeCooldownKey,
@@ -387,7 +396,10 @@ export async function startWatcher(config: Config) {
             }, {
               shouldAlertFn: shouldAlert,
               sendTelegramFn: sendTelegramMessage,
-              repriceFn: () => getTokenPrice(group.baseToken, group.quoteToken, undefined, { forceRefresh: true }),
+              repriceFn: () => getTokenPrice(group.baseToken, group.quoteToken, item.priceQueryMinBaseAmount || 1, {
+                forceRefresh: true,
+                amountMode: 'human',
+              }),
               executeTradeFn: (executionContext) => executeTrade(config.trade!, item, tradeSide!, {
                 lockedCycleAvailableAmount: tradeCooldownKey
                   ? tradeCycleBaseAvailable.get(tradeCooldownKey)
@@ -454,6 +466,7 @@ export async function startWatcher(config: Config) {
                     pairSymbol: formatPair(item.baseToken, item.quoteToken!),
                     reason,
                     currentPrice: price,
+                    quotedBaseAmount: item.priceQueryMinBaseAmount || 1,
                     tradeExecutionResult: finalTradeExecutionResult,
                   });
                   const followUpSent = await sendTelegramMessage(config.telegram, followUpMessage);

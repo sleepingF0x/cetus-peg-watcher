@@ -99,6 +99,7 @@ Telegram 目前分为 3 类事件：
 | `avgTargetPercent` | number | ⚠️ | - | 均价百分比模式，如 103 表示均价的 103%（与 targetPrice 二选一） |
 | `condition` | string | ✅ | - | 触发条件：`above`（高于）或 `below`（低于） |
 | `quoteToken` | string | - | USDC 地址 | 计价货币，默认 USDC |
+| `priceQueryMinBaseAmount` | number | - | `1` | 询价使用的最小 `baseToken` 数量，按人类单位填写，例如 `1000` 表示按 1000 个 baseToken 报价 |
 | `pollInterval` | number | - | `30` | 轮询间隔（秒） |
 | `alertCooldownSeconds` | number | - | `1800` | 预警冷却时间（秒） |
 | `tradeCooldownSeconds` | number | - | `1800` | 交易冷却时间（秒） |
@@ -119,7 +120,7 @@ Telegram 目前分为 3 类事件：
 ### 1. 价格获取
 
 - 调用 Cetus Aggregator API 查询当前价格
-- 输入 1 单位 baseToken，获取 quoteToken 报价
+- 输入 `priceQueryMinBaseAmount` 个 baseToken 获取 quoteToken 报价，未配置时默认按 1 个单位
 - 价格 = `amountOut / amountIn * 10^(baseDecimals - quoteDecimals)`
 
 ### 2. 触发条件判断
@@ -142,7 +143,7 @@ Telegram 目前分为 3 类事件：
 
 ### 3.5 交易前复核（避免无效成交）
 
-- 触发交易后，会立刻再次请求最新报价（re-quote）
+- 触发交易后，会按相同的 `priceQueryMinBaseAmount` 立刻再次请求最新报价（re-quote）
 - 交易前需要连续 `tradeConfirmations` 次轮询都满足条件（默认 2 次）
 - 若 `avg_percent` 模式下当前价格相对触发线的额外偏离达到 `fastTrackExtraPercent`，则进入 fast-track，跳过 `tradeConfirmations`
 - 若 re-quote 已不满足阈值条件，则跳过本次交易
@@ -234,6 +235,7 @@ finalSlippage = min(dynamicSlippage, fastTrackMaxSlippagePercent)
       "baseToken": "0x2::sui::SUI",
       "alertMode": "avg_percent",
       "condition": "above",
+      "priceQueryMinBaseAmount": 1000,
       "avgWindowMinutes": 10,
       "avgTargetPercent": 103,
       "avgResumeFactor": 0.95,
@@ -279,6 +281,7 @@ finalSlippage = min(dynamicSlippage, fastTrackMaxSlippagePercent)
       "baseToken": "0x2::sui::SUI",
       "alertMode": "avg_percent",
       "condition": "above",
+      "priceQueryMinBaseAmount": 1000,
       "avgWindowMinutes": 10,
       "avgTargetPercent": 103,
       "avgResumeFactor": 0.95,

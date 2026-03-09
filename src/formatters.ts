@@ -10,6 +10,35 @@ export function formatPair(baseToken: string, quoteToken: string): string {
   return `${getTokenSymbol(baseToken)}/${getTokenSymbol(quoteToken)}`;
 }
 
+export function scaleHumanAmountToAtomicAmount(amount: number | string, decimals: number): bigint {
+  const amountStr = String(amount).trim();
+  const normalized = amountStr.replace(/^(\d+)\.$/, '$1');
+  const match = normalized.match(/^(\d+)(?:\.(\d+))?$/);
+  if (!match) {
+    throw new Error(`Invalid decimal amount: ${amountStr}`);
+  }
+
+  const integerPart = match[1] || '0';
+  const fractionalPart = match[2] || '';
+  const scaledFractional = fractionalPart.slice(0, decimals).padEnd(decimals, '0');
+  const combined = `${integerPart}${scaledFractional}`.replace(/^0+(?=\d)/, '');
+  const scaled = BigInt(combined || '0');
+
+  if (scaled > 0n) {
+    return scaled;
+  }
+
+  return /^0*(?:\.0*)?$/.test(normalized) ? 0n : 1n;
+}
+
+export function formatDisplayAmount(amount: number, maxDecimals: number = 6): string {
+  if (!Number.isFinite(amount)) {
+    return String(amount);
+  }
+
+  return amount.toFixed(maxDecimals).replace(/\.?0+$/, '');
+}
+
 export function formatAmount(
   amount: string | bigint | undefined,
   decimals: number,

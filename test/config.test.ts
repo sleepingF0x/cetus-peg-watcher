@@ -92,6 +92,26 @@ test('loadConfig applies fast-track and status polling defaults', () => {
   assert.equal(config.trade?.statusPollDelayMs, 1500);
   assert.equal(config.trade?.statusPollIntervalMs, 1500);
   assert.equal(config.trade?.statusPollTimeoutMs, 15000);
+  assert.equal(config.items[0].priceQueryMinBaseAmount, 1);
+});
+
+test('loadConfig preserves explicit price query size', () => {
+  const filePath = writeTempConfig({
+    telegram: { enabled: false },
+    items: [
+      {
+        id: 'sui-below',
+        baseToken: '0x2::sui::SUI',
+        condition: 'below',
+        targetPrice: 1.2,
+        priceQueryMinBaseAmount: 1000,
+      },
+    ],
+  });
+
+  const config = loadConfig(filePath);
+
+  assert.equal(config.items[0].priceQueryMinBaseAmount, 1000);
 });
 
 test('loadConfig throws when fast-track percent is out of range', () => {
@@ -132,4 +152,21 @@ test('loadConfig throws when status polling timeout is not positive', () => {
   });
 
   assert.throws(() => loadConfig(filePath), /trade\.statusPollTimeoutMs must be a positive integer/);
+});
+
+test('loadConfig throws when item price query size is not positive', () => {
+  const filePath = writeTempConfig({
+    telegram: { enabled: false },
+    items: [
+      {
+        id: 'sui-below',
+        baseToken: '0x2::sui::SUI',
+        condition: 'below',
+        targetPrice: 1.2,
+        priceQueryMinBaseAmount: 0,
+      },
+    ],
+  });
+
+  assert.throws(() => loadConfig(filePath), /item\[0\]\.priceQueryMinBaseAmount must be a positive number/);
 });

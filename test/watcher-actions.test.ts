@@ -23,6 +23,7 @@ test('processAlertActions returns without sending when alert cooldown is active'
     ruleKey: 'rule-1',
     pairSymbol: 'SUI/USDC',
     currentPrice: 1.1,
+    quotedBaseAmount: 1000,
     reason: 'target: below $1.2000',
     tradeSide: 'buy',
     tradeCooldownKey: 'trade-1',
@@ -63,6 +64,7 @@ test('processAlertActions sends alert without trade when trade is disabled', asy
     ruleKey: 'rule-1',
     pairSymbol: 'SUI/USDC',
     currentPrice: 1.1,
+    quotedBaseAmount: 1000,
     reason: 'target: below $1.2000',
     tradeSide: 'buy',
     tradeCooldownKey: 'trade-1',
@@ -92,6 +94,7 @@ test('buildAlertMessage uses actual trade input and output token direction', () 
     pairSymbol: 'SUI/USDC',
     reason: 'target: below $1.2000',
     currentPrice: 1.1,
+    quotedBaseAmount: 1000,
     tradeExecutionResult: {
       status: 'success',
       side: 'buy',
@@ -108,6 +111,8 @@ test('buildAlertMessage uses actual trade input and output token direction', () 
 
   assert.match(message, /BUY 1\.25 USDC → 1 SUI/);
   assert.match(message, /1\.25(?:0+)? SUI\/USDC/);
+  assert.match(message, /Quoted Price: <code>\$1\.100000<\/code>/);
+  assert.match(message, /Quoted Size: <code>1000 SUI<\/code>/);
 });
 
 test('buildAlertMessage shows failed trade status with on-chain reason', () => {
@@ -115,6 +120,7 @@ test('buildAlertMessage shows failed trade status with on-chain reason', () => {
     pairSymbol: 'SUI/USDC',
     reason: 'target: above $1.2000',
     currentPrice: 1.3,
+    quotedBaseAmount: 1000,
     tradeExecutionResult: {
       status: 'failure',
       side: 'sell',
@@ -128,6 +134,7 @@ test('buildAlertMessage shows failed trade status with on-chain reason', () => {
   assert.match(message, /Price Alert \+ Trade Failed/);
   assert.match(message, /Status: <code>FAILED<\/code>/);
   assert.match(message, /err_amount_out_slippage_check_failed/);
+  assert.doesNotMatch(message, /Current:/);
 });
 
 test('buildOpsAlertMessage prefixes the title with Ops Warning', () => {
@@ -162,6 +169,7 @@ test('processAlertActions still sends the signal alert when trade execution thro
     ruleKey: 'rule-1',
     pairSymbol: 'SUI/USDC',
     currentPrice: 1.1,
+    quotedBaseAmount: 1000,
     reason: 'target: below $1.2000',
     tradeSide: 'buy',
     tradeCooldownKey: 'trade-1',
@@ -205,6 +213,7 @@ test('processAlertActions does not treat submitted trade with digest as executed
     ruleKey: 'rule-1',
     pairSymbol: 'SUI/USDC',
     currentPrice: 1.3,
+    quotedBaseAmount: 1000,
     reason: 'target: above $1.2000',
     tradeSide: 'sell',
     tradeCooldownKey: 'trade-1',
@@ -256,6 +265,7 @@ test('processAlertActions sends failed trade status when chain reports failure',
     ruleKey: 'rule-1',
     pairSymbol: 'SUI/USDC',
     currentPrice: 1.3,
+    quotedBaseAmount: 1000,
     reason: 'target: above $1.2000',
     tradeSide: 'sell',
     tradeCooldownKey: 'trade-1',
@@ -308,6 +318,7 @@ test('processAlertActions only treats confirmed success as executed trade', asyn
     ruleKey: 'rule-1',
     pairSymbol: 'SUI/USDC',
     currentPrice: 1.3,
+    quotedBaseAmount: 1000,
     reason: 'target: above $1.2000',
     tradeSide: 'sell',
     tradeCooldownKey: 'trade-1',
@@ -364,6 +375,7 @@ test('processAlertActions sends pending trade status and schedules follow-up whe
     ruleKey: 'rule-1',
     pairSymbol: 'SUI/USDC',
     currentPrice: 1.3,
+    quotedBaseAmount: 1000,
     reason: 'target: above $1.2000',
     tradeSide: 'sell',
     tradeCooldownKey: 'trade-1',
@@ -421,6 +433,7 @@ test('processAlertActions recomputes fast-track context from requoted price befo
     ruleKey: 'rule-1',
     pairSymbol: 'SUI/USDC',
     currentPrice: 10.4,
+    quotedBaseAmount: 1000,
     reason: '15m avg x 102.5%: above $10.2500',
     tradeSide: 'sell',
     tradeCooldownKey: 'trade-1',

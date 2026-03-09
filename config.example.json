@@ -27,6 +27,7 @@
       "baseToken": "0x2::sui::SUI",
       "alertMode": "avg_percent",
       "condition": "above",
+      "priceQueryMinBaseAmount": 1000,
       "pollInterval": 60,
       "alertCooldownSeconds": 1800,
       "tradeCooldownSeconds": 300,
@@ -41,6 +42,7 @@
       "alertMode": "price",
       "targetPrice": 0.3,
       "condition": "below",
+      "priceQueryMinBaseAmount": 1000,
       "tradeConfirmations": 2
     }
   ]
