@@ -367,7 +367,7 @@ LOG_PRETTY=true npm start
 docker-compose up --build
 ```
 
-**注意**：Docker 部署时需确保 `config.json` 已存在；若启用交易，还需准备 `wallet.mnemonic` 并设置权限为 `600`。
+**注意**：Docker 部署时需确保 `config.json` 已存在；若启用交易，还需准备 `wallet.mnemonic` 并设置权限为 `600`。冷却状态（`data/state.json`）通过命名卷 `watcher-state` 持久化，重启后不会丢失。
 
 ---
 
@@ -403,7 +403,8 @@ docker-compose up --build
 │   └── config.ts                 # 向后兼容 re-export → config/
 ├── config.example.json           # 配置示例
 ├── config.json                   # 运行时配置（不提交）
-├── state.json                    # 状态文件（自动生成）
+├── data/
+│   └── state.json                # 冷却状态文件（自动生成）
 ├── Dockerfile
 └── docker-compose.yml
 ```

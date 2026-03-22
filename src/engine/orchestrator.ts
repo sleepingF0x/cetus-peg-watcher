@@ -4,7 +4,7 @@ import { CooldownManager } from '../cooldown/manager.js';
 import { createAlertRuleKey } from '../watcher-logic.js';
 import { WatchGroupRunner, type WatchGroup } from './runner.js';
 
-const STATE_FILE = path.resolve('state.json');
+const STATE_FILE = path.resolve('data/state.json');
 
 function groupItems(config: ResolvedConfig): WatchGroup[] {
   const map = new Map<string, WatchGroup>();

@@ -1,4 +1,5 @@
 import fs from 'fs';
+import path from 'path';
 import { createModuleLogger, toLogError } from './logger.js';
 
 export interface AlertState {
@@ -39,6 +40,7 @@ export function loadState(filePath: string): AlertState {
 
 export function saveState(filePath: string, state: AlertState): void {
   try {
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
     const data = JSON.stringify(state, null, 2);
     fs.writeFileSync(filePath, data, 'utf-8');
   } catch (error) {

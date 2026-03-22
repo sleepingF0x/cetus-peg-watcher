@@ -5,3 +5,7 @@ services:
     volumes:
       - ./config.json:/app/config.json:ro
       - ./wallet.mnemonic:/app/wallet.mnemonic:ro
+      - watcher-state:/app/data
+
+volumes:
+  watcher-state:
