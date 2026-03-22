@@ -1,39 +1,17 @@
-import fs from 'fs';
 import BN from 'bn.js';
-import axios from 'axios';
-import { AggregatorClient } from '@cetusprotocol/aggregator-sdk';
-import { SuiClient } from '@mysten/sui/client';
-import { Ed25519Keypair } from '@mysten/sui/keypairs/ed25519';
 import { Transaction } from '@mysten/sui/transactions';
-import { TradeConfig, WatchItem } from './config.js';
-import { getCoinDecimals } from './coin-metadata.js';
+import type { ResolvedTradeConfig, ResolvedWatchItem } from './config.js';
 import { formatPair } from './formatters.js';
 import { createModuleLogger, toLogError } from './logger.js';
+import type { TradeSide, TradeStatus, TradeExecutionResult } from './trading/types.js';
+import { getTraderContext } from './trading/context.js';
 
 const SUI_MIST_PER_SUI = 1_000_000_000n;
 const TRADE_PERCENT_SCALE = 10_000;
 const TRADE_PERCENT_DENOMINATOR = 100 * TRADE_PERCENT_SCALE;
 const log = createModuleLogger('Trade');
 
-export type TradeSide = 'buy' | 'sell';
-export type TradeExecutionStatus = 'skipped' | 'submitted' | 'success' | 'failure' | 'unknown';
-
-export interface TradeExecutionResult {
-  status: TradeExecutionStatus;
-  success: boolean;
-  skipped: boolean;
-  reason: string;
-  side: TradeSide;
-  inputCoin: string;
-  outputCoin: string;
-  amountIn?: string;
-  amountOut?: string;
-  realizedPrice?: number;
-  digest?: string;
-  inputDecimals?: number;
-  outputDecimals?: number;
-  error?: string;
-}
+export type { TradeSide, TradeStatus, TradeExecutionResult } from './trading/types.js';
 
 interface ExecuteTradeOptions {
   lockedCycleAvailableAmount?: string;
@@ -41,62 +19,38 @@ interface ExecuteTradeOptions {
   overshootPercent?: number;
 }
 
-interface TraderContext {
-  keypair: Ed25519Keypair;
-  walletAddress: string;
-  suiClient: SuiClient;
-  aggregator: AggregatorClient;
-}
-
-let cachedContextKey = '';
-let cachedContext: TraderContext | null = null;
-
-interface BalanceChange {
-  owner?: {
-    AddressOwner?: string;
-  };
-  coinType?: string;
-  amount?: string;
-}
-
-interface TransactionBlockResult {
-  effects?: {
-    status?: {
-      status?: string;
-      error?: string;
-    };
-  };
-  balanceChanges?: BalanceChange[];
-}
-
-interface RpcResponse<T> {
-  result?: T;
-}
-
 function delay(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function retryRpc<T>(fn: () => Promise<T>, retries = 2): Promise<T> {
+  for (let i = 0; i <= retries; i++) {
+    try {
+      return await fn();
+    } catch (error) {
+      if (i === retries) throw error;
+      await delay(1000 * (i + 1));
+    }
+  }
+  throw new Error('unreachable');
 }
 
 export async function pollTradeExecutionUntilFinal(
   pollFn: () => Promise<TradeExecutionResult>,
   retryDelayMs: number,
+  maxAttempts = 10,
 ): Promise<TradeExecutionResult> {
-  while (true) {
-    const result = await pollFn();
-    if (result.status !== 'unknown') {
-      return result;
-    }
-    await delay(retryDelayMs);
+  let lastResult: TradeExecutionResult = { status: 'unknown', side: 'buy', inputCoin: '', outputCoin: '' };
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    lastResult = await pollFn();
+    if (lastResult.status !== 'unknown') return lastResult;
+    if (attempt < maxAttempts - 1) await delay(retryDelayMs);
   }
-}
-
-function loadKeypairFromMnemonic(mnemonicFile: string, derivationPath: string): Ed25519Keypair {
-  const mnemonic = fs.readFileSync(mnemonicFile, 'utf-8').trim();
-  if (!mnemonic) {
-    throw new Error(`mnemonic file is empty: ${mnemonicFile}`);
-  }
-
-  return Ed25519Keypair.deriveKeypair(mnemonic, derivationPath);
+  log.warn(
+    { event: 'trade_status_poll_exhausted', maxAttempts },
+    `Trade status still unknown after ${maxAttempts} poll attempts`,
+  );
+  return lastResult;
 }
 
 function readRecord(value: unknown): Record<string, unknown> | null {
@@ -151,16 +105,12 @@ function parseSignedAmount(value: string | undefined): bigint {
   }
 }
 
-function normalizeAddressOwner(owner: BalanceChange['owner']): string | null {
-  const address = owner?.AddressOwner;
-  if (!address) {
-    return null;
-  }
-  return address.toLowerCase();
+function normalizeAddress(address: string | null | undefined): string | null {
+  return address ? address.toLowerCase() : null;
 }
 
 function sumCoinAmountForOwner(
-  changes: BalanceChange[],
+  changes: Array<{ owner: unknown; coinType?: string; amount?: string }>,
   ownerAddress: string,
   coinType: string,
 ): bigint {
@@ -169,128 +119,73 @@ function sumCoinAmountForOwner(
   let total = 0n;
 
   for (const change of changes) {
-    const owner = normalizeAddressOwner(change.owner);
-    if (!owner || owner !== normalizedOwner) {
-      continue;
-    }
-    if (!change.coinType || change.coinType.toLowerCase() !== normalizedCoinType) {
-      continue;
-    }
+    const ownerRecord = readRecord(change.owner);
+    const addressOwner = normalizeAddress(extractStringField(ownerRecord, 'AddressOwner'));
+    if (!addressOwner || addressOwner !== normalizedOwner) continue;
+    if (!change.coinType || change.coinType.toLowerCase() !== normalizedCoinType) continue;
     total += parseSignedAmount(change.amount);
   }
 
   return total;
 }
 
-async function getExecutionMetrics(
-  rpcUrl: string,
+async function getTransactionDetails(
+  suiClient: import('@mysten/sui/client').SuiClient,
   digest: string,
-  ownerAddress: string,
-  inputCoin: string,
-  outputCoin: string,
-): Promise<{ amountOut?: string; realizedPrice?: number; inputDecimals?: number; outputDecimals?: number }> {
-  const response = await axios.post<RpcResponse<TransactionBlockResult>>(rpcUrl, {
-    jsonrpc: '2.0',
-    id: 1,
-    method: 'sui_getTransactionBlock',
-    params: [
+): Promise<{
+  chainStatus: { status: 'success' | 'failure' | 'unknown'; error?: string };
+  balanceChanges: Array<{ owner: unknown; coinType?: string; amount?: string }>;
+}> {
+  try {
+    const tx = await suiClient.getTransactionBlock({
       digest,
-      {
+      options: {
+        showEffects: true,
         showBalanceChanges: true,
       },
-    ],
-  }, {
-    timeout: 20000,
-  });
+    });
 
-  const balanceChanges = response.data.result?.balanceChanges ?? [];
-  const inputDelta = sumCoinAmountForOwner(balanceChanges, ownerAddress, inputCoin);
-  const outputDelta = sumCoinAmountForOwner(balanceChanges, ownerAddress, outputCoin);
+    const txStatus = tx.effects?.status?.status;
+    const txError = tx.effects?.status?.error;
 
-  const actualInput = inputDelta < 0n ? -inputDelta : 0n;
-  const actualOutput = outputDelta > 0n ? outputDelta : 0n;
-  if (actualInput === 0n || actualOutput === 0n) {
-    return {};
+    const chainStatus = txStatus === 'success'
+      ? { status: 'success' as const }
+      : txStatus === 'failure'
+        ? { status: 'failure' as const, error: txError }
+        : { status: 'unknown' as const };
+
+    const balanceChanges = (tx.balanceChanges ?? []) as Array<{ owner: unknown; coinType?: string; amount?: string }>;
+
+    return { chainStatus, balanceChanges };
+  } catch {
+    return { chainStatus: { status: 'unknown' }, balanceChanges: [] };
   }
-
-  const [inputDecimals, outputDecimals] = await Promise.all([
-    getCoinDecimals(inputCoin, rpcUrl),
-    getCoinDecimals(outputCoin, rpcUrl),
-  ]);
-
-  if (inputDecimals === null || outputDecimals === null) {
-    return {
-      amountOut: actualOutput.toString(),
-    };
-  }
-
-  const realizedPrice = (Number(actualOutput) / Number(actualInput))
-    * Math.pow(10, inputDecimals - outputDecimals);
-
-  return {
-    amountOut: actualOutput.toString(),
-    realizedPrice,
-    inputDecimals,
-    outputDecimals,
-  };
 }
 
-async function getTransactionChainStatus(
-  rpcUrl: string,
+async function waitForFinalTransactionDetails(
+  suiClient: import('@mysten/sui/client').SuiClient,
+  tradeConfig: ResolvedTradeConfig,
   digest: string,
-): Promise<{ status: 'success' | 'failure' | 'unknown'; error?: string }> {
-  const response = await axios.post<RpcResponse<TransactionBlockResult>>(rpcUrl, {
-    jsonrpc: '2.0',
-    id: 1,
-    method: 'sui_getTransactionBlock',
-    params: [
-      digest,
-      {
-        showEffects: true,
-      },
-    ],
-  }, {
-    timeout: 20000,
-  });
-
-  const status = response.data.result?.effects?.status?.status;
-  const error = response.data.result?.effects?.status?.error;
-
-  if (status === 'success') {
-    return { status: 'success' };
-  }
-
-  if (status === 'failure') {
-    return { status: 'failure', error };
-  }
-
-  return { status: 'unknown' };
-}
-
-async function waitForFinalTransactionStatus(
-  tradeConfig: TradeConfig,
-  digest: string,
-): Promise<{ status: 'success' | 'failure' | 'unknown'; error?: string }> {
-  const delayMs = tradeConfig.statusPollDelayMs ?? 1500;
-  const intervalMs = tradeConfig.statusPollIntervalMs ?? 1500;
-  const timeoutMs = tradeConfig.statusPollTimeoutMs ?? 15000;
+): Promise<{
+  chainStatus: { status: 'success' | 'failure' | 'unknown'; error?: string };
+  balanceChanges: Array<{ owner: unknown; coinType?: string; amount?: string }>;
+}> {
+  const delayMs = tradeConfig.statusPollDelayMs;
+  const intervalMs = tradeConfig.statusPollIntervalMs;
+  const timeoutMs = tradeConfig.statusPollTimeoutMs;
   const startedAt = Date.now();
 
   await delay(delayMs);
 
   while (Date.now() - startedAt <= timeoutMs) {
     try {
-      const result = await getTransactionChainStatus(tradeConfig.rpcUrl!, digest);
-      if (result.status !== 'unknown') {
-        return result;
+      const details = await getTransactionDetails(suiClient, digest);
+      if (details.chainStatus.status !== 'unknown') {
+        return details;
       }
     } catch (error: unknown) {
       log.warn(
-        {
-          event: 'trade_status_poll_failed',
-          digest,
-          err: toLogError(error),
-        },
+        { event: 'trade_status_poll_failed', digest, err: toLogError(error) },
         'Unable to poll trade status',
       );
     }
@@ -298,18 +193,18 @@ async function waitForFinalTransactionStatus(
     await delay(intervalMs);
   }
 
-  return { status: 'unknown' };
+  return { chainStatus: { status: 'unknown' }, balanceChanges: [] };
 }
 
 function isSuiCoinType(coinType: string): boolean {
   return coinType.toLowerCase().endsWith('::sui::sui');
 }
 
-function calculateTradableAmount(totalBalance: bigint, inputCoin: string, tradeConfig: TradeConfig): bigint {
+function calculateTradableAmount(totalBalance: bigint, inputCoin: string, tradeConfig: ResolvedTradeConfig): bigint {
   let tradableAmount = totalBalance;
 
   if (isSuiCoinType(inputCoin)) {
-    const reserveMist = BigInt(Math.floor((tradeConfig.suiGasReserve || 0) * Number(SUI_MIST_PER_SUI)));
+    const reserveMist = BigInt(Math.floor(tradeConfig.suiGasReserve * Number(SUI_MIST_PER_SUI)));
     tradableAmount = tradableAmount > reserveMist ? tradableAmount - reserveMist : 0n;
   }
 
@@ -317,30 +212,30 @@ function calculateTradableAmount(totalBalance: bigint, inputCoin: string, tradeC
 }
 
 export function resolveTradePercent(
-  tradeConfig: TradeConfig,
+  tradeConfig: ResolvedTradeConfig,
   options?: Pick<ExecuteTradeOptions, 'fastTrack'>,
 ): number {
   if (options?.fastTrack) {
-    return tradeConfig.fastTrackTradePercent || tradeConfig.maxTradePercent || 100;
+    return tradeConfig.fastTrackTradePercent;
   }
 
-  return tradeConfig.maxTradePercent || 100;
+  return tradeConfig.maxTradePercent;
 }
 
 export function resolveTradeSlippagePercent(
-  tradeConfig: TradeConfig,
+  tradeConfig: ResolvedTradeConfig,
   options?: Pick<ExecuteTradeOptions, 'fastTrack' | 'overshootPercent'>,
 ): number {
-  const baseSlippagePercent = tradeConfig.slippagePercent || 0.5;
+  const baseSlippagePercent = tradeConfig.slippagePercent;
   if (!options?.fastTrack) {
     return baseSlippagePercent;
   }
 
-  const fastTrackExtraPercent = tradeConfig.fastTrackExtraPercent || 0;
-  const overshootPercent = options.overshootPercent || 0;
+  const fastTrackExtraPercent = tradeConfig.fastTrackExtraPercent;
+  const overshootPercent = options.overshootPercent ?? 0;
   const extraOvershootPercent = Math.max(0, overshootPercent - fastTrackExtraPercent);
-  const dynamicSlippage = baseSlippagePercent + (extraOvershootPercent * (tradeConfig.fastTrackSlippageMultiplier || 0));
-  const cappedSlippage = Math.min(dynamicSlippage, tradeConfig.fastTrackMaxSlippagePercent || dynamicSlippage);
+  const dynamicSlippage = baseSlippagePercent + (extraOvershootPercent * tradeConfig.fastTrackSlippageMultiplier);
+  const cappedSlippage = Math.min(dynamicSlippage, tradeConfig.fastTrackMaxSlippagePercent);
 
   return Math.round(cappedSlippage * 1_000_000) / 1_000_000;
 }
@@ -351,51 +246,22 @@ function calculateAmountByPercent(baseAmount: bigint, tradePercent: number): big
 }
 
 export async function getCurrentTradableAmount(
-  tradeConfig: TradeConfig,
-  item: WatchItem,
+  tradeConfig: ResolvedTradeConfig,
+  item: ResolvedWatchItem,
   side: TradeSide,
 ): Promise<bigint> {
-  const inputCoin = side === 'buy' ? item.quoteToken! : item.baseToken;
+  const inputCoin = side === 'buy' ? item.quoteToken : item.baseToken;
   const context = getTraderContext(tradeConfig);
-  const balanceResponse = await context.suiClient.getBalance({
+  const balanceResponse = await retryRpc(() => context.suiClient.getBalance({
     owner: context.walletAddress,
     coinType: inputCoin,
-  });
+  }));
   const totalBalance = extractBalance(balanceResponse);
   return calculateTradableAmount(totalBalance, inputCoin, tradeConfig);
 }
 
-function getTraderContext(tradeConfig: TradeConfig): TraderContext {
-  const mnemonicFile = tradeConfig.mnemonicFile!;
-  const derivationPath = tradeConfig.derivationPath || "m/44'/784'/0'/0'/0'";
-  const rpcUrl = tradeConfig.rpcUrl!;
-  const cacheKey = `${mnemonicFile}|${derivationPath}|${rpcUrl}`;
-
-  if (cachedContext && cachedContextKey === cacheKey) {
-    return cachedContext;
-  }
-
-  const keypair = loadKeypairFromMnemonic(mnemonicFile, derivationPath);
-  const walletAddress = keypair.getPublicKey().toSuiAddress();
-  const suiClient = new SuiClient({ url: rpcUrl });
-  const aggregator = new AggregatorClient({
-    client: suiClient,
-    signer: walletAddress,
-  });
-
-  cachedContext = {
-    keypair,
-    walletAddress,
-    suiClient,
-    aggregator,
-  };
-  cachedContextKey = cacheKey;
-
-  return cachedContext;
-}
-
 export async function confirmTradeExecution(
-  tradeConfig: TradeConfig,
+  tradeConfig: ResolvedTradeConfig,
   trade: {
     digest: string;
     side: TradeSide;
@@ -405,15 +271,16 @@ export async function confirmTradeExecution(
   },
 ): Promise<TradeExecutionResult> {
   const context = getTraderContext(tradeConfig);
-  const finalStatus = await waitForFinalTransactionStatus(tradeConfig, trade.digest);
+  const { chainStatus, balanceChanges } = await waitForFinalTransactionDetails(
+    context.suiClient,
+    tradeConfig,
+    trade.digest,
+  );
 
-  if (finalStatus.status === 'failure') {
+  if (chainStatus.status === 'failure') {
     return {
       status: 'failure',
-      success: false,
-      skipped: false,
-      reason: 'trade failed',
-      error: finalStatus.error,
+      error: chainStatus.error,
       side: trade.side,
       inputCoin: trade.inputCoin,
       outputCoin: trade.outputCoin,
@@ -422,12 +289,9 @@ export async function confirmTradeExecution(
     };
   }
 
-  if (finalStatus.status === 'unknown') {
+  if (chainStatus.status === 'unknown') {
     return {
       status: 'unknown',
-      success: false,
-      skipped: false,
-      reason: 'trade status unknown',
       side: trade.side,
       inputCoin: trade.inputCoin,
       outputCoin: trade.outputCoin,
@@ -436,23 +300,33 @@ export async function confirmTradeExecution(
     };
   }
 
+  // success — extract metrics from balance changes already fetched in the same call
   let amountOut: string | undefined;
   let realizedPrice: number | undefined;
   let inputDecimals: number | undefined;
   let outputDecimals: number | undefined;
 
   try {
-    const executionMetrics = await getExecutionMetrics(
-      tradeConfig.rpcUrl!,
-      trade.digest,
-      context.walletAddress,
-      trade.inputCoin,
-      trade.outputCoin,
-    );
-    amountOut = executionMetrics.amountOut;
-    realizedPrice = executionMetrics.realizedPrice;
-    inputDecimals = executionMetrics.inputDecimals;
-    outputDecimals = executionMetrics.outputDecimals;
+    const inputDelta = sumCoinAmountForOwner(balanceChanges, context.walletAddress, trade.inputCoin);
+    const outputDelta = sumCoinAmountForOwner(balanceChanges, context.walletAddress, trade.outputCoin);
+    const actualInput = inputDelta < 0n ? -inputDelta : 0n;
+    const actualOutput = outputDelta > 0n ? outputDelta : 0n;
+
+    if (actualInput > 0n && actualOutput > 0n) {
+      amountOut = actualOutput.toString();
+
+      const [inDecimals, outDecimals] = await Promise.all([
+        context.suiClient.getCoinMetadata({ coinType: trade.inputCoin }),
+        context.suiClient.getCoinMetadata({ coinType: trade.outputCoin }),
+      ]);
+
+      if (inDecimals?.decimals !== undefined && outDecimals?.decimals !== undefined) {
+        inputDecimals = inDecimals.decimals;
+        outputDecimals = outDecimals.decimals;
+        realizedPrice = (Number(actualOutput) / Number(actualInput))
+          * Math.pow(10, inputDecimals - outputDecimals);
+      }
+    }
   } catch (error: unknown) {
     log.warn(
       {
@@ -468,9 +342,6 @@ export async function confirmTradeExecution(
 
   return {
     status: 'success',
-    success: true,
-    skipped: false,
-    reason: 'trade executed',
     side: trade.side,
     inputCoin: trade.inputCoin,
     outputCoin: trade.outputCoin,
@@ -484,13 +355,13 @@ export async function confirmTradeExecution(
 }
 
 export async function executeTrade(
-  tradeConfig: TradeConfig,
-  item: WatchItem,
+  tradeConfig: ResolvedTradeConfig,
+  item: ResolvedWatchItem,
   side: TradeSide,
   options?: ExecuteTradeOptions,
 ): Promise<TradeExecutionResult> {
-  const inputCoin = side === 'buy' ? item.quoteToken! : item.baseToken;
-  const outputCoin = side === 'buy' ? item.baseToken : item.quoteToken!;
+  const inputCoin = side === 'buy' ? item.quoteToken : item.baseToken;
+  const outputCoin = side === 'buy' ? item.baseToken : item.quoteToken;
 
   if (!tradeConfig.enabled) {
     log.info(
@@ -504,9 +375,6 @@ export async function executeTrade(
     );
     return {
       status: 'skipped',
-      success: false,
-      skipped: true,
-      reason: 'trade disabled',
       side,
       inputCoin,
       outputCoin,
@@ -514,10 +382,10 @@ export async function executeTrade(
   }
 
   const context = getTraderContext(tradeConfig);
-  const balanceResponse = await context.suiClient.getBalance({
+  const balanceResponse = await retryRpc(() => context.suiClient.getBalance({
     owner: context.walletAddress,
     coinType: inputCoin,
-  });
+  }));
   const totalBalance = extractBalance(balanceResponse);
   const currentTradableAmount = calculateTradableAmount(totalBalance, inputCoin, tradeConfig);
 
@@ -540,9 +408,6 @@ export async function executeTrade(
     );
     return {
       status: 'skipped',
-      success: false,
-      skipped: true,
-      reason: 'insufficient tradable balance for locked cycle amount',
       side,
       inputCoin,
       outputCoin,
@@ -562,21 +427,18 @@ export async function executeTrade(
     );
     return {
       status: 'skipped',
-      success: false,
-      skipped: true,
-      reason: 'insufficient tradable balance',
       side,
       inputCoin,
       outputCoin,
     };
   }
 
-  const route = await context.aggregator.findRouters({
+  const route = await retryRpc(() => context.aggregator.findRouters({
     from: inputCoin,
     target: outputCoin,
     amount: new BN(tradableAmount.toString()),
     byAmountIn: true,
-  });
+  }));
 
   if (!route || route.insufficientLiquidity || route.amountOut.toString() === '0') {
     log.info(
@@ -591,9 +453,6 @@ export async function executeTrade(
     );
     return {
       status: 'skipped',
-      success: false,
-      skipped: true,
-      reason: 'no executable route',
       side,
       inputCoin,
       outputCoin,
@@ -610,7 +469,7 @@ export async function executeTrade(
 
   const execution = await context.aggregator.sendTransaction(txb, context.keypair);
   const digest = extractDigest(execution);
-  
+
   if (digest) {
     log.info(
       {
@@ -622,12 +481,10 @@ export async function executeTrade(
       'Submitted trade transaction',
     );
   }
+
   if (!digest) {
     return {
       status: 'unknown',
-      success: false,
-      skipped: false,
-      reason: 'trade submitted without digest',
       side,
       inputCoin,
       outputCoin,

@@ -1,4 +1,4 @@
-import type { TradeConfig, WatchItem } from './config.js';
+import type { ResolvedTradeConfig, ResolvedWatchItem } from './config.js';
 import type { AveragePauseRule } from './watcher-logic.js';
 import { shouldEvaluateRule } from './watcher-logic.js';
 
@@ -7,12 +7,12 @@ function roundMetric(value: number): number {
 }
 
 interface EvaluateWatchRuleInput {
-  item: WatchItem;
+  item: ResolvedWatchItem;
   price: number;
   avgWindowPrice: number | null;
   previousHitCount: number;
   pauseRule?: AveragePauseRule;
-  tradeConfig?: Pick<TradeConfig, 'fastTrackEnabled' | 'fastTrackExtraPercent'>;
+  tradeConfig?: Pick<ResolvedTradeConfig, 'fastTrackEnabled' | 'fastTrackExtraPercent'>;
   allowFastTrack?: boolean;
 }
 
@@ -30,11 +30,11 @@ export interface RuleEvaluationResult {
 }
 
 interface FastTrackContextInput {
-  item: WatchItem;
+  item: ResolvedWatchItem;
   price: number;
   avgWindowPrice: number | null;
   triggerThreshold: number | null;
-  tradeConfig?: Pick<TradeConfig, 'fastTrackEnabled' | 'fastTrackExtraPercent'>;
+  tradeConfig?: Pick<ResolvedTradeConfig, 'fastTrackEnabled' | 'fastTrackExtraPercent'>;
   allowFastTrack?: boolean;
   isConditionMet: boolean;
 }
@@ -54,7 +54,7 @@ export function resolveFastTrackContext(input: FastTrackContextInput): {
     && input.item.alertMode === 'avg_percent'
     && input.allowFastTrack === true
     && input.tradeConfig?.fastTrackEnabled === true
-    && overshootPercent >= (input.tradeConfig.fastTrackExtraPercent ?? 0);
+    && overshootPercent >= (input.tradeConfig?.fastTrackExtraPercent ?? 0);
 
   return {
     isFastTrack,
@@ -62,8 +62,8 @@ export function resolveFastTrackContext(input: FastTrackContextInput): {
   };
 }
 
-export function createAveragePauseRule(item: WatchItem, avgWindowPrice: number): AveragePauseRule {
-  const deviation = Math.abs((item.avgTargetPercent || 100) - 100) / 100;
+export function createAveragePauseRule(item: ResolvedWatchItem, avgWindowPrice: number): AveragePauseRule {
+  const deviation = Math.abs((item.avgTargetPercent ?? 100) - 100) / 100;
   const resumeFactor = item.avgResumeFactor ?? 0.95;
   const recoverDeviation = deviation * resumeFactor;
   const resumeMultiplier = item.condition === 'above'
@@ -79,7 +79,7 @@ export function createAveragePauseRule(item: WatchItem, avgWindowPrice: number):
 export function evaluateWatchRule(input: EvaluateWatchRuleInput): RuleEvaluationResult {
   if (input.pauseRule) {
     const resumed = shouldEvaluateRule({
-      alertMode: input.item.alertMode!,
+      alertMode: input.item.alertMode,
       currentPrice: input.price,
       pauseRule: input.pauseRule,
     });
@@ -102,7 +102,7 @@ export function evaluateWatchRule(input: EvaluateWatchRuleInput): RuleEvaluation
 
   const averageTargetPrice = input.avgWindowPrice === null
     ? null
-    : input.avgWindowPrice * ((input.item.avgTargetPercent || 100) / 100);
+    : input.avgWindowPrice * ((input.item.avgTargetPercent ?? 100) / 100);
 
   const triggerThreshold = input.item.alertMode === 'price'
     ? input.item.targetPrice!
@@ -119,7 +119,7 @@ export function evaluateWatchRule(input: EvaluateWatchRuleInput): RuleEvaluation
     );
 
   const hitCount = isConditionMet ? input.previousHitCount + 1 : 0;
-  const requiredConfirmations = input.item.tradeConfirmations || 2;
+  const requiredConfirmations = input.item.tradeConfirmations;
   const { isFastTrack, overshootPercent } = resolveFastTrackContext({
     item: input.item,
     price: input.price,

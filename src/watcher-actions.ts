@@ -1,6 +1,6 @@
-import type { TradeConfig, WatchItem, TelegramConfig } from './config.js';
+import type { ResolvedTradeConfig, ResolvedWatchItem, ResolvedTelegramConfig } from './config.js';
 import type { AlertState } from './state.js';
-import type { TradeExecutionResult, TradeSide } from './trader.js';
+import type { TradeExecutionResult, TradeSide } from './trading/types.js';
 import { resolveFastTrackContext } from './watcher-rules.js';
 import {
   calculateExecutedPrice,
@@ -15,7 +15,7 @@ export interface AlertMessageInput {
   reason: string;
   currentPrice: number;
   quotedBaseAmount: number;
-  tradeExecutionResult: TradeExecutionLike | null;
+  tradeExecutionResult: TradeExecutionResult | null;
 }
 
 export interface OpsAlertMessageInput {
@@ -24,22 +24,8 @@ export interface OpsAlertMessageInput {
   details: string[];
 }
 
-export interface TradeExecutionLike {
-  status: 'submitted' | 'success' | 'failure' | 'unknown';
-  side: string;
-  inputCoin: string;
-  outputCoin: string;
-  amountIn?: string;
-  amountOut?: string;
-  realizedPrice?: number;
-  digest?: string;
-  inputDecimals?: number;
-  outputDecimals?: number;
-  error?: string;
-}
-
 interface ProcessAlertActionsInput {
-  item: WatchItem;
+  item: ResolvedWatchItem;
   ruleKey: string;
   pairSymbol: string;
   currentPrice: number;
@@ -50,17 +36,17 @@ interface ProcessAlertActionsInput {
   triggerThreshold: number | null;
   avgWindowPrice?: number | null;
   configTradeEnabled: boolean;
-  configTrade?: TradeConfig;
-  configTelegram: TelegramConfig | undefined;
+  configTrade: ResolvedTradeConfig;
+  configTelegram: ResolvedTelegramConfig | undefined;
   state: AlertState;
 }
 
 interface ActionDependencies {
   shouldAlertFn: (tokenId: string, cooldownSeconds: number, state: AlertState) => boolean;
-  sendTelegramFn: (config: TelegramConfig | undefined, message: string) => Promise<boolean>;
+  sendTelegramFn: (config: ResolvedTelegramConfig | undefined, message: string) => Promise<boolean>;
   executeTradeFn: (executionContext: { fastTrack: boolean; overshootPercent: number }) => Promise<TradeExecutionResult>;
   repriceFn: () => Promise<number | null>;
-  scheduleTradeStatusFollowUpFn?: (tradeResult: TradeExecutionLike) => void;
+  scheduleTradeStatusFollowUpFn?: (tradeResult: TradeExecutionResult) => void;
 }
 
 export interface ProcessAlertActionsResult {
@@ -68,7 +54,7 @@ export interface ProcessAlertActionsResult {
   tradeExecuted: boolean;
   shouldRecordAlert: boolean;
   shouldRecordTradeCooldown: boolean;
-  tradeExecutionResult: TradeExecutionLike | null;
+  tradeExecutionResult: TradeExecutionResult | null;
   opsNotification: {
     kind: 'trade_failed';
     title: string;
@@ -78,20 +64,20 @@ export interface ProcessAlertActionsResult {
 
 export function buildAlertMessage(input: AlertMessageInput): string {
   const baseSymbol = input.pairSymbol.split('/')[0] || input.pairSymbol;
-  const tradeTitleByStatus: Record<TradeExecutionLike['status'], string> = {
+  const tradeTitleByStatus: Partial<Record<TradeExecutionResult['status'], string>> = {
     submitted: '🚨 <b>Price Alert + Trade Submitted</b>',
     success: '🚨 <b>Price Alert + Trade Executed</b>',
     failure: '🚨 <b>Price Alert + Trade Failed</b>',
     unknown: '🚨 <b>Price Alert + Trade Pending</b>',
   };
-  const tradeStatusLabel: Record<TradeExecutionLike['status'], string> = {
+  const tradeStatusLabel: Partial<Record<TradeExecutionResult['status'], string>> = {
     submitted: 'SUBMITTED',
     success: 'SUCCESS',
     failure: 'FAILED',
     unknown: 'PENDING',
   };
   const messageLines: string[] = [
-    input.tradeExecutionResult ? tradeTitleByStatus[input.tradeExecutionResult.status] : '🚨 <b>Price Alert</b>',
+    input.tradeExecutionResult ? (tradeTitleByStatus[input.tradeExecutionResult.status] ?? '🚨 <b>Price Alert + Trade</b>') : '🚨 <b>Price Alert</b>',
     `Pair: <code>${input.pairSymbol}</code>`,
     `Trigger: <code>${input.reason}</code>`,
     `Quoted Price: <code>$${input.currentPrice.toFixed(6)}</code>`,
@@ -102,7 +88,7 @@ export function buildAlertMessage(input: AlertMessageInput): string {
     const inputSymbol = getTokenSymbol(input.tradeExecutionResult.inputCoin);
     const outputSymbol = getTokenSymbol(input.tradeExecutionResult.outputCoin);
     messageLines.push('');
-    messageLines.push(`Status: <code>${tradeStatusLabel[input.tradeExecutionResult.status]}</code>`);
+    messageLines.push(`Status: <code>${tradeStatusLabel[input.tradeExecutionResult.status] ?? input.tradeExecutionResult.status.toUpperCase()}</code>`);
 
     if (input.tradeExecutionResult.status === 'success') {
       const inputDecimals = input.tradeExecutionResult.inputDecimals ?? 6;
@@ -136,7 +122,7 @@ export function buildOpsAlertMessage(input: OpsAlertMessageInput): string {
   return [
     `⚠️ <b>Ops Warning: ${input.title}</b>`,
     `Pair: <code>${input.pairSymbol}</code>`,
-    ...input.details.map((detail) => detail.startsWith('<') ? detail : detail),
+    ...input.details,
   ].join('\n');
 }
 
@@ -144,7 +130,7 @@ export async function processAlertActions(
   input: ProcessAlertActionsInput,
   deps: ActionDependencies,
 ): Promise<ProcessAlertActionsResult> {
-  if (!deps.shouldAlertFn(input.ruleKey, input.item.alertCooldownSeconds || 1800, input.state)) {
+  if (!deps.shouldAlertFn(input.ruleKey, input.item.alertCooldownSeconds, input.state)) {
     return {
       alertSent: false,
       tradeExecuted: false,
@@ -155,7 +141,7 @@ export async function processAlertActions(
     };
   }
 
-  let tradeExecutionResult: TradeExecutionLike | null = null;
+  let tradeExecutionResult: TradeExecutionResult | null = null;
   let shouldRecordTradeCooldown = false;
   let opsNotification: ProcessAlertActionsResult['opsNotification'] = null;
 
@@ -165,7 +151,7 @@ export async function processAlertActions(
     input.tradeSide !== null &&
     input.tradeCooldownKey !== null &&
     input.triggerThreshold !== null &&
-    deps.shouldAlertFn(input.tradeCooldownKey, input.item.tradeCooldownSeconds || 1800, input.state)
+    deps.shouldAlertFn(input.tradeCooldownKey, input.item.tradeCooldownSeconds, input.state)
   ) {
     const requotedPrice = await deps.repriceFn();
     if (requotedPrice !== null) {
@@ -188,20 +174,8 @@ export async function processAlertActions(
             fastTrack: executionContext.isFastTrack,
             overshootPercent: executionContext.overshootPercent,
           });
-          if (!tradeResult.skipped && tradeResult.status !== 'skipped') {
-            tradeExecutionResult = {
-              status: tradeResult.status,
-              side: tradeResult.side,
-              inputCoin: tradeResult.inputCoin,
-              outputCoin: tradeResult.outputCoin,
-              amountIn: tradeResult.amountIn,
-              amountOut: tradeResult.amountOut,
-              realizedPrice: tradeResult.realizedPrice,
-              digest: tradeResult.digest,
-              inputDecimals: tradeResult.inputDecimals,
-              outputDecimals: tradeResult.outputDecimals,
-              error: tradeResult.error,
-            };
+          if (tradeResult.status !== 'skipped') {
+            tradeExecutionResult = tradeResult;
             shouldRecordTradeCooldown = tradeResult.status === 'success';
             if (tradeResult.status === 'unknown') {
               deps.scheduleTradeStatusFollowUpFn?.(tradeExecutionResult);

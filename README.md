@@ -103,7 +103,7 @@ Telegram 目前分为 3 类事件：
 | `pollInterval` | number | - | `30` | 轮询间隔（秒） |
 | `alertCooldownSeconds` | number | - | `1800` | 预警冷却时间（秒） |
 | `tradeCooldownSeconds` | number | - | `1800` | 交易冷却时间（秒） |
-| `tradeConfirmations` | number | - | `2` | 交易触发前需要连续命中的轮询次数（仅影响交易，不影响预警） |
+| `tradeConfirmations` | number | - | `2` | 连续命中阈值，同时控制预警发送和交易触发。连续命中 N 次后才发告警并下单（fast-track 时跳过此限制） |
 | `avgWindowMinutes` | number | - | `10` | 均价计算窗口（分钟），仅 avg_percent 模式有效 |
 | `avgResumeFactor` | number | - | `0.95` | 告警后恢复均价采样的回归系数（0~1，仅 avg_percent） |
 | `alertMode` | string | - | 自动推断 | 触发模式：`price` 或 `avg_percent`，不填时根据 targetPrice/avgTargetPercent 自动推断 |
@@ -135,11 +135,9 @@ Telegram 目前分为 3 类事件：
 当 `trade.enabled = true` 且该币种 `tradeEnabled = true` 时：
 
 ```
-当前价格 < 参考价 → 买入 (buy)
-当前价格 > 参考价 → 卖出 (sell)
+condition = below → 买入 (buy)   // 价格跌破阈值，抄底买入
+condition = above → 卖出 (sell)  // 价格涨破阈值，高位卖出
 ```
-
-**注意**：交易方向只看价格比较结果，不再看 `condition` 字段。
 
 ### 3.5 交易前复核（避免无效成交）
 
@@ -336,7 +334,7 @@ npm run build
 ### 开发模式运行
 
 ```bash
-npx ts-node --esm src/index.ts
+npm start
 ```
 
 ### 日志与排错
@@ -346,7 +344,7 @@ npx ts-node --esm src/index.ts
 - `level`：日志级别数值（`10/20/30/40/50/60`）
 - `levelName`：日志级别文本（`trace/debug/info/warn/error/fatal`）
 - `service`：服务名（`cetus-peg-watcher`）
-- `module`：模块名（如 `Watcher`、`Cetus`、`Trade`）
+- `module`：模块名（如 `Runner`、`PriceOracle`、`Trade`、`Telegram`）
 - `event`：事件名（如 `poll_loop_error`、`price_fetch_failed`）
 - `msg`：可读消息
 - `err`：错误对象（仅错误日志，包含 `type/message/stack`）
@@ -378,16 +376,34 @@ docker-compose up --build
 ```
 .
 ├── src/
-│   ├── index.ts      # 入口，信号处理
-│   ├── config.ts     # 配置加载与校验
-│   ├── watcher.ts    # 轮询监控逻辑
-│   ├── cetus.ts      # 价格查询 API
-│   ├── trader.ts     # 交易执行模块
-│   ├── notifier.ts   # 兼容保留（默认不使用）
-│   └── state.ts      # 冷却状态管理
-├── config.example.json   # 配置示例
-├── config.json          # 运行时配置（不提交）
-├── state.json           # 状态文件（自动生成）
+│   ├── index.ts                  # 入口，信号处理，优雅关机
+│   ├── config/
+│   │   ├── loader.ts             # loadConfig() — 加载、校验、填默认值
+│   │   ├── types.ts              # 原始输入类型（全部可选）
+│   │   └── resolved.ts           # 解析后类型（全部必填）
+│   ├── engine/
+│   │   ├── orchestrator.ts       # startWatcher() — 分组、创建 Runner、启动定时器
+│   │   └── runner.ts             # WatchGroupRunner — 每组轮询逻辑、告警分发
+│   ├── pricing/
+│   │   └── oracle.ts             # PriceOracle — HTTP keep-alive、请求去重、缓存
+│   ├── cooldown/
+│   │   └── manager.ts            # CooldownManager — 冷却状态、防抖写盘
+│   ├── trading/
+│   │   ├── context.ts            # TraderContext 工厂（keypair、SuiClient、Aggregator）
+│   │   └── types.ts              # TradeSide、TradeStatus、TradeExecutionResult
+│   ├── watcher-rules.ts          # 触发条件评估、fast-track 判断
+│   ├── watcher-actions.ts        # 告警动作：复价、下单、构建消息
+│   ├── watcher-logic.ts          # 状态 key 生成、暂停规则、串行轮询封装
+│   ├── trader.ts                 # 交易执行：路由、签名、链上状态轮询
+│   ├── telegram.ts               # Telegram Bot API 通知（含 429/5xx 重试）
+│   ├── formatters.ts             # 金额/价格格式化
+│   ├── logger.ts                 # Pino 结构化日志
+│   ├── state.ts                  # state.json 读写
+│   ├── cetus.ts                  # 向后兼容 shim → PriceOracle
+│   └── config.ts                 # 向后兼容 re-export → config/
+├── config.example.json           # 配置示例
+├── config.json                   # 运行时配置（不提交）
+├── state.json                    # 状态文件（自动生成）
 ├── Dockerfile
 └── docker-compose.yml
 ```

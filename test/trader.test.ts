@@ -1,19 +1,28 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import type { ResolvedTradeConfig } from '../src/config/resolved.js';
 import {
   pollTradeExecutionUntilFinal,
   resolveTradePercent,
   resolveTradeSlippagePercent,
 } from '../src/trader.js';
 
-const tradeConfig = {
+const tradeConfig: ResolvedTradeConfig = {
   enabled: true,
+  mnemonicFile: '',
+  derivationPath: "m/44'/784'/0'/0'/0'",
+  rpcUrl: 'https://fullnode.mainnet.sui.io:443',
   slippagePercent: 0.5,
+  suiGasReserve: 0.02,
   maxTradePercent: 50,
+  fastTrackEnabled: true,
   fastTrackExtraPercent: 1.5,
   fastTrackTradePercent: 75,
   fastTrackSlippageMultiplier: 0.35,
   fastTrackMaxSlippagePercent: 2,
+  statusPollDelayMs: 1500,
+  statusPollIntervalMs: 1500,
+  statusPollTimeoutMs: 15000,
 };
 
 test('resolveTradePercent uses normal trade percent outside fast-track', () => {
@@ -58,11 +67,8 @@ test('pollTradeExecutionUntilFinal retries unknown results until a final status 
       attempts += 1;
       if (attempts < 3) {
         return {
-          status: 'unknown',
-          success: false,
-          skipped: false,
-          reason: 'trade status unknown',
-          side: 'sell',
+          status: 'unknown' as const,
+          side: 'sell' as const,
           inputCoin: '0x2::sui::SUI',
           outputCoin: '0xquote::usdc::USDC',
           digest: '0xpending',
@@ -70,11 +76,8 @@ test('pollTradeExecutionUntilFinal retries unknown results until a final status 
       }
 
       return {
-        status: 'success',
-        success: true,
-        skipped: false,
-        reason: 'trade executed',
-        side: 'sell',
+        status: 'success' as const,
+        side: 'sell' as const,
         inputCoin: '0x2::sui::SUI',
         outputCoin: '0xquote::usdc::USDC',
         digest: '0xpending',
@@ -85,4 +88,26 @@ test('pollTradeExecutionUntilFinal retries unknown results until a final status 
 
   assert.equal(attempts, 3);
   assert.equal(result.status, 'success');
+});
+
+test('pollTradeExecutionUntilFinal stops after maxAttempts and returns unknown', async () => {
+  let attempts = 0;
+
+  const result = await pollTradeExecutionUntilFinal(
+    async () => {
+      attempts += 1;
+      return {
+        status: 'unknown' as const,
+        side: 'buy' as const,
+        inputCoin: '0xquote::usdc::USDC',
+        outputCoin: '0x2::sui::SUI',
+        digest: '0xstuck',
+      };
+    },
+    0,
+    3,
+  );
+
+  assert.equal(attempts, 3);
+  assert.equal(result.status, 'unknown');
 });

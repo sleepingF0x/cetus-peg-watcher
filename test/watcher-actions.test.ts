@@ -1,16 +1,51 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import type { ResolvedWatchItem } from '../src/config/resolved.js';
 import {
   buildAlertMessage,
   buildOpsAlertMessage,
   processAlertActions,
 } from '../src/watcher-actions.js';
 
+function makeItem(fields: Partial<ResolvedWatchItem> & Pick<ResolvedWatchItem, 'id' | 'baseToken' | 'quoteToken' | 'condition' | 'alertMode'>): ResolvedWatchItem {
+  return {
+    pollInterval: 30,
+    alertCooldownSeconds: 1800,
+    tradeCooldownSeconds: 1800,
+    priceQueryMinBaseAmount: 1,
+    tradeEnabled: true,
+    tradeConfirmations: 2,
+    ...fields,
+  };
+}
+
+import type { ResolvedTradeConfig } from '../src/config/resolved.js';
+function makeTradeConfig(fields: Partial<ResolvedTradeConfig>): ResolvedTradeConfig {
+  return {
+    enabled: false,
+    mnemonicFile: '',
+    derivationPath: "m/44'/784'/0'/0'/0'",
+    rpcUrl: 'https://fullnode.mainnet.sui.io:443',
+    slippagePercent: 0.1,
+    suiGasReserve: 0.02,
+    maxTradePercent: 100,
+    fastTrackEnabled: true,
+    fastTrackExtraPercent: 1.5,
+    fastTrackTradePercent: 75,
+    fastTrackSlippageMultiplier: 0.35,
+    fastTrackMaxSlippagePercent: 2,
+    statusPollDelayMs: 1500,
+    statusPollIntervalMs: 1500,
+    statusPollTimeoutMs: 15000,
+    ...fields,
+  };
+}
+
 test('processAlertActions returns without sending when alert cooldown is active', async () => {
   let sent = false;
 
   const result = await processAlertActions({
-    item: {
+    item: makeItem({
       id: 'sui-below',
       baseToken: '0x2::sui::SUI',
       quoteToken: '0xquote::usdc::USDC',
@@ -19,7 +54,7 @@ test('processAlertActions returns without sending when alert cooldown is active'
       alertMode: 'price',
       alertCooldownSeconds: 1800,
       tradeEnabled: true,
-    },
+    }),
     ruleKey: 'rule-1',
     pairSymbol: 'SUI/USDC',
     currentPrice: 1.1,
@@ -29,6 +64,7 @@ test('processAlertActions returns without sending when alert cooldown is active'
     tradeCooldownKey: 'trade-1',
     triggerThreshold: 1.2,
     configTradeEnabled: false,
+    configTrade: makeTradeConfig({}),
     configTelegram: { enabled: true, botToken: 'token', chatId: 'chat' },
     state: { lastAlertTime: { 'rule-1': Date.now() } },
   }, {
@@ -51,7 +87,7 @@ test('processAlertActions sends alert without trade when trade is disabled', asy
   let sentMessage = '';
 
   const result = await processAlertActions({
-    item: {
+    item: makeItem({
       id: 'sui-below',
       baseToken: '0x2::sui::SUI',
       quoteToken: '0xquote::usdc::USDC',
@@ -60,7 +96,7 @@ test('processAlertActions sends alert without trade when trade is disabled', asy
       alertMode: 'price',
       alertCooldownSeconds: 1800,
       tradeEnabled: true,
-    },
+    }),
     ruleKey: 'rule-1',
     pairSymbol: 'SUI/USDC',
     currentPrice: 1.1,
@@ -70,6 +106,7 @@ test('processAlertActions sends alert without trade when trade is disabled', asy
     tradeCooldownKey: 'trade-1',
     triggerThreshold: 1.2,
     configTradeEnabled: false,
+    configTrade: makeTradeConfig({}),
     configTelegram: { enabled: true, botToken: 'token', chatId: 'chat' },
     state: { lastAlertTime: {} },
   }, {
@@ -155,7 +192,7 @@ test('processAlertActions still sends the signal alert when trade execution thro
   const sentMessages: string[] = [];
 
   const result = await processAlertActions({
-    item: {
+    item: makeItem({
       id: 'sui-below',
       baseToken: '0x2::sui::SUI',
       quoteToken: '0xquote::usdc::USDC',
@@ -165,7 +202,7 @@ test('processAlertActions still sends the signal alert when trade execution thro
       alertCooldownSeconds: 1800,
       tradeCooldownSeconds: 1800,
       tradeEnabled: true,
-    },
+    }),
     ruleKey: 'rule-1',
     pairSymbol: 'SUI/USDC',
     currentPrice: 1.1,
@@ -175,6 +212,7 @@ test('processAlertActions still sends the signal alert when trade execution thro
     tradeCooldownKey: 'trade-1',
     triggerThreshold: 1.2,
     configTradeEnabled: true,
+    configTrade: makeTradeConfig({}),
     configTelegram: { enabled: true, botToken: 'token', chatId: 'chat' },
     state: { lastAlertTime: {} },
   }, {
@@ -199,7 +237,7 @@ test('processAlertActions does not treat submitted trade with digest as executed
   let sentMessage = '';
 
   const result = await processAlertActions({
-    item: {
+    item: makeItem({
       id: 'sui-above',
       baseToken: '0x2::sui::SUI',
       quoteToken: '0xquote::usdc::USDC',
@@ -209,7 +247,7 @@ test('processAlertActions does not treat submitted trade with digest as executed
       alertCooldownSeconds: 1800,
       tradeCooldownSeconds: 1800,
       tradeEnabled: true,
-    },
+    }),
     ruleKey: 'rule-1',
     pairSymbol: 'SUI/USDC',
     currentPrice: 1.3,
@@ -219,6 +257,7 @@ test('processAlertActions does not treat submitted trade with digest as executed
     tradeCooldownKey: 'trade-1',
     triggerThreshold: 1.2,
     configTradeEnabled: true,
+    configTrade: makeTradeConfig({}),
     configTelegram: { enabled: true, botToken: 'token', chatId: 'chat' },
     state: { lastAlertTime: {} },
   }, {
@@ -228,11 +267,8 @@ test('processAlertActions does not treat submitted trade with digest as executed
       return true;
     },
     executeTradeFn: async () => ({
-      status: 'submitted',
-      success: false,
-      skipped: false,
-      reason: 'awaiting final confirmation',
-      side: 'sell',
+      status: 'submitted' as const,
+      side: 'sell' as const,
       inputCoin: '0x2::sui::SUI',
       outputCoin: '0xquote::usdc::USDC',
       digest: '0xsubmitted',
@@ -251,7 +287,7 @@ test('processAlertActions sends failed trade status when chain reports failure',
   let sentMessage = '';
 
   const result = await processAlertActions({
-    item: {
+    item: makeItem({
       id: 'sui-above',
       baseToken: '0x2::sui::SUI',
       quoteToken: '0xquote::usdc::USDC',
@@ -261,7 +297,7 @@ test('processAlertActions sends failed trade status when chain reports failure',
       alertCooldownSeconds: 1800,
       tradeCooldownSeconds: 1800,
       tradeEnabled: true,
-    },
+    }),
     ruleKey: 'rule-1',
     pairSymbol: 'SUI/USDC',
     currentPrice: 1.3,
@@ -271,6 +307,7 @@ test('processAlertActions sends failed trade status when chain reports failure',
     tradeCooldownKey: 'trade-1',
     triggerThreshold: 1.2,
     configTradeEnabled: true,
+    configTrade: makeTradeConfig({}),
     configTelegram: { enabled: true, botToken: 'token', chatId: 'chat' },
     state: { lastAlertTime: {} },
   }, {
@@ -280,12 +317,9 @@ test('processAlertActions sends failed trade status when chain reports failure',
       return true;
     },
     executeTradeFn: async () => ({
-      status: 'failure',
-      success: false,
-      skipped: false,
-      reason: 'trade failed',
+      status: 'failure' as const,
       error: 'err_amount_out_slippage_check_failed',
-      side: 'sell',
+      side: 'sell' as const,
       inputCoin: '0x2::sui::SUI',
       outputCoin: '0xquote::usdc::USDC',
       digest: '0xfailed',
@@ -304,7 +338,7 @@ test('processAlertActions only treats confirmed success as executed trade', asyn
   let sentMessage = '';
 
   const result = await processAlertActions({
-    item: {
+    item: makeItem({
       id: 'sui-above',
       baseToken: '0x2::sui::SUI',
       quoteToken: '0xquote::usdc::USDC',
@@ -314,7 +348,7 @@ test('processAlertActions only treats confirmed success as executed trade', asyn
       alertCooldownSeconds: 1800,
       tradeCooldownSeconds: 1800,
       tradeEnabled: true,
-    },
+    }),
     ruleKey: 'rule-1',
     pairSymbol: 'SUI/USDC',
     currentPrice: 1.3,
@@ -324,6 +358,7 @@ test('processAlertActions only treats confirmed success as executed trade', asyn
     tradeCooldownKey: 'trade-1',
     triggerThreshold: 1.2,
     configTradeEnabled: true,
+    configTrade: makeTradeConfig({}),
     configTelegram: { enabled: true, botToken: 'token', chatId: 'chat' },
     state: { lastAlertTime: {} },
   }, {
@@ -333,11 +368,8 @@ test('processAlertActions only treats confirmed success as executed trade', asyn
       return true;
     },
     executeTradeFn: async () => ({
-      status: 'success',
-      success: true,
-      skipped: false,
-      reason: 'trade executed',
-      side: 'sell',
+      status: 'success' as const,
+      side: 'sell' as const,
       inputCoin: '0x2::sui::SUI',
       outputCoin: '0xquote::usdc::USDC',
       amountIn: '1000000000',
@@ -361,7 +393,7 @@ test('processAlertActions sends pending trade status and schedules follow-up whe
   let followUpScheduled = false;
 
   const result = await processAlertActions({
-    item: {
+    item: makeItem({
       id: 'sui-above',
       baseToken: '0x2::sui::SUI',
       quoteToken: '0xquote::usdc::USDC',
@@ -371,7 +403,7 @@ test('processAlertActions sends pending trade status and schedules follow-up whe
       alertCooldownSeconds: 1800,
       tradeCooldownSeconds: 1800,
       tradeEnabled: true,
-    },
+    }),
     ruleKey: 'rule-1',
     pairSymbol: 'SUI/USDC',
     currentPrice: 1.3,
@@ -381,6 +413,7 @@ test('processAlertActions sends pending trade status and schedules follow-up whe
     tradeCooldownKey: 'trade-1',
     triggerThreshold: 1.2,
     configTradeEnabled: true,
+    configTrade: makeTradeConfig({}),
     configTelegram: { enabled: true, botToken: 'token', chatId: 'chat' },
     state: { lastAlertTime: {} },
   }, {
@@ -390,11 +423,8 @@ test('processAlertActions sends pending trade status and schedules follow-up whe
       return true;
     },
     executeTradeFn: async () => ({
-      status: 'unknown',
-      success: false,
-      skipped: false,
-      reason: 'trade status unknown',
-      side: 'sell',
+      status: 'unknown' as const,
+      side: 'sell' as const,
       inputCoin: '0x2::sui::SUI',
       outputCoin: '0xquote::usdc::USDC',
       amountIn: '1000000000',
@@ -417,7 +447,7 @@ test('processAlertActions recomputes fast-track context from requoted price befo
   let receivedExecutionContext: { fastTrack: boolean; overshootPercent: number } | null = null;
 
   const result = await processAlertActions({
-    item: {
+    item: makeItem({
       id: 'sui-above',
       baseToken: '0x2::sui::SUI',
       quoteToken: '0xquote::usdc::USDC',
@@ -429,7 +459,7 @@ test('processAlertActions recomputes fast-track context from requoted price befo
       alertCooldownSeconds: 1800,
       tradeCooldownSeconds: 1800,
       tradeEnabled: true,
-    },
+    }),
     ruleKey: 'rule-1',
     pairSymbol: 'SUI/USDC',
     currentPrice: 10.4,
@@ -440,7 +470,7 @@ test('processAlertActions recomputes fast-track context from requoted price befo
     triggerThreshold: 10.25,
     avgWindowPrice: 10,
     configTradeEnabled: true,
-    configTrade: {
+    configTrade: makeTradeConfig({
       enabled: true,
       fastTrackEnabled: true,
       fastTrackExtraPercent: 1.5,
@@ -448,7 +478,7 @@ test('processAlertActions recomputes fast-track context from requoted price befo
       slippagePercent: 0.5,
       fastTrackSlippageMultiplier: 0.35,
       fastTrackMaxSlippagePercent: 2,
-    },
+    }),
     configTelegram: { enabled: true, botToken: 'token', chatId: 'chat' },
     state: { lastAlertTime: {} },
   }, {
@@ -457,11 +487,8 @@ test('processAlertActions recomputes fast-track context from requoted price befo
     executeTradeFn: async (executionContext) => {
       receivedExecutionContext = executionContext;
       return {
-        status: 'submitted',
-        success: false,
-        skipped: false,
-        reason: 'awaiting final confirmation',
-        side: 'sell',
+        status: 'submitted' as const,
+        side: 'sell' as const,
         inputCoin: '0x2::sui::SUI',
         outputCoin: '0xquote::usdc::USDC',
         digest: '0xsubmitted',
