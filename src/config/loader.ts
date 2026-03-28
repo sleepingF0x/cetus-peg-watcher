@@ -1,4 +1,6 @@
 import fs from 'fs';
+import path from 'path';
+import { parse as parseToml } from 'smol-toml';
 import type { Config, WatchItem, TradeConfig, TelegramConfig } from './types.js';
 import type { ResolvedConfig, ResolvedWatchItem, ResolvedTradeConfig, ResolvedTelegramConfig } from './resolved.js';
 
@@ -198,7 +200,8 @@ export function loadConfig(filePath: string): ResolvedConfig {
   }
 
   const rawData = fs.readFileSync(filePath, 'utf-8');
-  const raw = JSON.parse(rawData) as Config;
+  const ext = path.extname(filePath).toLowerCase();
+  const raw = (ext === '.toml' ? parseToml(rawData) : JSON.parse(rawData)) as Config;
 
   if (!raw.items || !Array.isArray(raw.items) || raw.items.length === 0) {
     throw new Error('items array is required and must not be empty');

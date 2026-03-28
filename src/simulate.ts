@@ -7,6 +7,7 @@
  *   npm run simulate -- --watch        # continuous: refresh every 3 s, build real avg
  */
 
+import fs from 'fs';
 import { loadConfig } from './config/loader.js';
 import { PriceOracle } from './pricing/oracle.js';
 import { formatPair } from './formatters.js';
@@ -15,7 +16,7 @@ import type { ResolvedConfig, ResolvedWatchItem, ResolvedTradeConfig } from './c
 
 // ── constants ─────────────────────────────────────────────────────────────────
 
-const CONFIG_PATH = './config.json';
+const CONFIG_PATH = fs.existsSync('./config.toml') ? './config.toml' : './config.json';
 const SAMPLE_INTERVAL_MS = 3000;
 const QUICK_SAMPLE_COUNT = 5;
 const BAR_WIDTH = 62;

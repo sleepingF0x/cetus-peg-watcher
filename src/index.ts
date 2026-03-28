@@ -1,9 +1,10 @@
+import fs from 'fs';
 import { loadConfig } from './config.js';
 import type { CooldownManager } from './cooldown/manager.js';
 import { startWatcher } from './engine/orchestrator.js';
 import { createModuleLogger, toLogError } from './logger.js';
 
-const CONFIG_FILE = 'config.json';
+const CONFIG_FILE = fs.existsSync('config.toml') ? 'config.toml' : 'config.json';
 const log = createModuleLogger('Index');
 
 let cooldown: CooldownManager | null = null;

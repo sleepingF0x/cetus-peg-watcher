@@ -1,0 +1,169 @@
+# Cetus Peg Watcher — 配置文件
+#
+# 快速开始：
+#   cp config.example.toml config.toml   # 复制模板
+#   vim config.toml                      # 填入真实值
+#   npm start                            # 启动
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Telegram 通知
+# ══════════════════════════════════════════════════════════════════════════════
+
+[telegram]
+
+# 是否启用 Telegram 推送。设为 true 时 botToken 和 chatId 为必填。
+enabled = false
+
+# BotFather 创建机器人后给出的 token
+botToken = "123456789:YOUR_BOT_TOKEN"
+
+# 目标聊天 ID（私聊为正数，群组/频道为负数）
+# 可向机器人发消息后访问 https://api.telegram.org/bot<token>/getUpdates 获取
+chatId = "-1001234567890"
+
+# 可选：发送到 Telegram 群组的指定 Topic（论坛频道的子话题 ID）
+# messageThreadId = 42
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 自动交易（Sui 链上）
+# ══════════════════════════════════════════════════════════════════════════════
+
+[trade]
+
+# 是否启用自动交易。设为 true 时 mnemonicFile 为必填。
+enabled = false
+
+# 助记词文件路径，文件权限必须为 600（chmod 600 wallet.mnemonic）
+mnemonicFile = "./wallet.mnemonic"
+
+# BIP-44 派生路径，默认为 Sui 标准路径
+# derivationPath = "m/44'/784'/0'/0'/0'"
+
+# Sui 全节点 RPC 地址
+# rpcUrl = "https://fullnode.mainnet.sui.io:443"
+
+# ── 仓位与滑点 ───────────────────────────────────────────────────────────────
+
+# 正常下单的滑点上限（%）。超出则交易失败。默认 0.1
+slippagePercent = 0.1
+
+# 钱包中保留多少 SUI 不参与交易，用于支付 gas。默认 0.02
+suiGasReserve = 0.02
+
+# 每笔正常交易最多动用多少可用余额（%）。默认 100（全仓）
+maxTradePercent = 30
+
+# ── 快速通道（Fast-track） ───────────────────────────────────────────────────
+#
+# 当价格超出阈值达到 fastTrackExtraPercent% 时，跳过 tradeConfirmations 次数
+# 直接下单，并使用更大仓位和更宽松的滑点，适合极端行情。
+
+# 是否启用快速通道。默认 true
+fastTrackEnabled = true
+
+# 价格需额外偏离阈值多少 % 才触发快速通道。默认 1.5
+# 例：阈值为均价 103%，fastTrackExtraPercent=1.5 → 实际价格超过均价 104.5% 才快速下单
+fastTrackExtraPercent = 1.5
+
+# 快速通道下单使用的仓位比例（%）。默认 75
+fastTrackTradePercent = 75
+
+# 动态滑点系数：overshoot% × multiplier 叠加到基础滑点上。默认 0.35
+# 价格偏离越远，自动给的滑点越宽，提升成交概率
+fastTrackSlippageMultiplier = 0.35
+
+# 快速通道滑点上限（%），防止滑点无限扩大。默认 2
+fastTrackMaxSlippagePercent = 2
+
+# ── 链上状态轮询 ─────────────────────────────────────────────────────────────
+# 广播交易后轮询链上状态，直到确认成功/失败或超时。
+
+# 广播后等待多久再开始查询（ms）。默认 1500
+# statusPollDelayMs = 1500
+
+# 每次查询的间隔（ms）。默认 1500
+# statusPollIntervalMs = 1500
+
+# 轮询总超时时间（ms），超时后标记为 unknown。默认 15000
+# statusPollTimeoutMs = 15000
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 监控规则（items）
+#
+# 每个 [[items]] 块是一条独立规则，可配置任意多条。
+#
+# 报警模式由字段自动推断：
+#   设 targetPrice     → price 模式：当前价与固定价格比较
+#   设 avgTargetPercent → avg_percent 模式：当前价与滚动均价比较
+# 两者只能选其一。
+# ══════════════════════════════════════════════════════════════════════════════
+
+# ── 示例 1：SUI 高于滚动均价 3% 时报警并买入 ─────────────────────────────────
+
+[[items]]
+
+# 规则唯一标识符，用于冷却状态的 key，不同规则不可重复
+id = "sui-above-avg-103"
+
+# 被监控的代币合约地址（baseToken）
+baseToken = "0x2::sui::SUI"
+
+# 触发方向：above = 价格高于阈值触发，below = 价格低于阈值触发
+condition = "above"
+
+# 可选：报价代币地址，默认为 USDC
+# quoteToken = "0xdba34672e30cb065b1f93e3ab55318768fd6fef66c15942c9f7cb846e2f900e7::usdc::USDC"
+
+# 询价时模拟成交的 baseToken 数量。数量越大，反映的价格越接近实际成交价。默认 1
+priceQueryMinBaseAmount = 1000
+
+# 轮询间隔（秒）。默认 30
+pollInterval = 60
+
+# ── 冷却时间 ─────────────────────────────────────────────────────────────────
+
+# 报警冷却（秒）：触发一次报警后，至少等待多久才能再次推送 Telegram。默认 1800
+alertCooldownSeconds = 1800
+
+# 交易冷却（秒）：执行一次交易后，至少等待多久才能再次下单。默认 1800
+tradeCooldownSeconds = 300
+
+# 也可以用 cooldownSeconds 同时设置两者（alertCooldownSeconds / tradeCooldownSeconds 优先级更高）
+# cooldownSeconds = 1800
+
+# ── 确认次数 ─────────────────────────────────────────────────────────────────
+
+# 连续命中几次条件才真正下单（防抖）。默认 2
+# 快速通道会跳过此限制直接下单。
+tradeConfirmations = 2
+
+# ── avg_percent 模式专用字段 ─────────────────────────────────────────────────
+
+# 触发阈值（%）：当前价 > 滚动均价 × (avgTargetPercent / 100) 时触发
+# 103 表示高于均价 3% 触发
+avgTargetPercent = 103
+
+# 滚动均价的时间窗口（分钟）。默认 10
+avgWindowMinutes = 10
+
+# 回落恢复系数：触发后，价格需回落到 均价 × (avgTargetPercent/100 × avgResumeFactor)
+# 以下，规则才会从暂停状态恢复。默认 0.95
+# 0.95 表示回落到触发价的 95% 以下才重新开始计数
+avgResumeFactor = 0.95
+
+# ── 示例 2：CETUS 跌破固定价格 0.3 时报警并买入 ──────────────────────────────
+
+[[items]]
+
+id        = "cetus-below-price-0_3"
+baseToken = "0x6864a6f921804860930db6ddbe2e16acdf8504495ea7481637a1c8b9a8fe54b::cetus::CETUS"
+condition = "below"
+
+# 固定目标价（price 模式）：当前价低于此值时触发
+targetPrice = 0.3
+
+tradeConfirmations      = 2
+priceQueryMinBaseAmount = 1000
+
+# 仅报警，不交易（覆盖全局 trade.enabled = true）
+# tradeEnabled = false

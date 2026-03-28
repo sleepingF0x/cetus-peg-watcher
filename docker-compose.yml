@@ -3,7 +3,7 @@ services:
     build: .
     restart: unless-stopped
     volumes:
-      - ./config.json:/app/config.json:ro
+      - ./config.toml:/app/config.toml:ro
       - ./wallet.mnemonic:/app/wallet.mnemonic:ro
       - watcher-state:/app/data
 

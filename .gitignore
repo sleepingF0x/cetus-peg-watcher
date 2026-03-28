@@ -2,6 +2,7 @@ node_modules
 dist
 state.json
 config.json
+config.toml
 .sisyphus
 wallet.mnemonic
 *.mnemonic
