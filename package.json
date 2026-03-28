@@ -6,7 +6,8 @@
   "scripts": {
     "start": "node --loader ts-node/esm src/index.ts",
     "build": "tsc",
-    "test": "node --test --loader ts-node/esm test/**/*.test.ts"
+    "test": "node --test --loader ts-node/esm test/**/*.test.ts",
+    "simulate": "node --loader ts-node/esm src/simulate.ts"
   },
   "keywords": [],
   "author": "",

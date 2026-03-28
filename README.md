@@ -13,6 +13,7 @@ Sui 区块链代币价格监控与自动交易工具。基于 Cetus DEX Aggregat
 - **智能冷却**：预警和交易分别冷却，防止重复触发
 - **状态持久化**：重启后保留冷却状态
 - **API 重试**：失败时指数退避自动重试
+- **触发条件可视化**：`simulate` 命令实时拉取链上价格，直观展示当前距各触发阈值的距离
 
 ## 快速开始
 
@@ -41,6 +42,22 @@ npm start
 ```bash
 ./start.sh
 ```
+
+### 4. 可视化触发条件（可选）
+
+启动前可先用 `simulate` 命令查看当前链上情况和触发阈值：
+
+```bash
+npm run simulate                    # 采集 5 个样本（~15s），计算估算均价后展示
+npm run simulate -- --assume-peg    # 即时展示，以当前价代替均价（适合快速预览）
+npm run simulate -- --watch         # 持续监控，每 3s 刷新，滚动积累真实均价
+```
+
+输出示例：
+- ASCII 价格轴，标注 FT-BUY / BUY / AVG / SELL / FT-SELL 各触发线位置
+- 当前价格到各触发线的精确百分比距离
+- 极速通道阈值及触发后的暂停恢复价格
+- 当前交易配置汇总（仓位比例、确认次数、滑点）
 
 ---
 
@@ -337,6 +354,20 @@ npm run build
 npm start
 ```
 
+### 触发条件模拟
+
+```bash
+npm run simulate [-- --assume-peg | --watch]
+```
+
+| 参数 | 说明 |
+|------|------|
+| （无参数） | 采集 5 个样本（约 15s）后展示，均价基于实采数据 |
+| `--assume-peg` | 即时展示，以当前价代替均价，适合快速检查配置 |
+| `--watch` | 持续运行，每 3s 刷新，逐步积累接近真实的滚动均价 |
+
+> 均价窗口进度条会显示已积累样本占总窗口（`avgWindowMinutes`）的比例。达到 100% 时均价最精确。
+
 ### 日志与排错
 
 应用默认输出 JSON 结构化日志（单行一条），核心字段包括：
@@ -391,6 +422,7 @@ docker-compose up --build
 │   ├── trading/
 │   │   ├── context.ts            # TraderContext 工厂（keypair、SuiClient、Aggregator）
 │   │   └── types.ts              # TradeSide、TradeStatus、TradeExecutionResult
+│   ├── simulate.ts               # 触发条件可视化（npm run simulate）
 │   ├── watcher-rules.ts          # 触发条件评估、fast-track 判断
 │   ├── watcher-actions.ts        # 告警动作：复价、下单、构建消息
 │   ├── watcher-logic.ts          # 状态 key 生成、暂停规则、串行轮询封装
