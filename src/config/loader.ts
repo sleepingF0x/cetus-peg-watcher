@@ -14,8 +14,8 @@ const DEFAULT_AVG_RESUME_FACTOR = 0.95;
 const DEFAULT_TRADE_RPC_URL = 'https://fullnode.mainnet.sui.io:443';
 const DEFAULT_SLIPPAGE_PERCENT = 0.1;
 const DEFAULT_SUI_GAS_RESERVE = 0.02;
-const DEFAULT_MAX_TRADE_PERCENT = 100;
-const DEFAULT_FAST_TRACK_ENABLED = true;
+const DEFAULT_MAX_TRADE_PERCENT = 10;
+const DEFAULT_FAST_TRACK_ENABLED = false;
 const DEFAULT_FAST_TRACK_EXTRA_PERCENT = 1.5;
 const DEFAULT_FAST_TRACK_TRADE_PERCENT = 75;
 const DEFAULT_FAST_TRACK_SLIPPAGE_MULTIPLIER = 0.35;
@@ -134,6 +134,9 @@ function resolveItem(item: WatchItem, index: number): ResolvedWatchItem {
   if (item.tradeConfirmations !== undefined && (!Number.isInteger(item.tradeConfirmations) || item.tradeConfirmations <= 0)) {
     throw new Error(`item[${index}].tradeConfirmations must be a positive integer`);
   }
+  if (item.maxSpreadPercent !== undefined && (typeof item.maxSpreadPercent !== 'number' || item.maxSpreadPercent <= 0 || item.maxSpreadPercent >= 100)) {
+    throw new Error(`item[${index}].maxSpreadPercent must be a number between 0 and 100`);
+  }
 
   const hasTargetPrice = item.targetPrice !== undefined;
   const hasAvgTargetPercent = item.avgTargetPercent !== undefined;
@@ -158,6 +161,7 @@ function resolveItem(item: WatchItem, index: number): ResolvedWatchItem {
     tradeConfirmations: item.tradeConfirmations ?? DEFAULT_TRADE_CONFIRMATIONS,
     priceQueryMinBaseAmount: item.priceQueryMinBaseAmount ?? 1,
     tradeEnabled: item.tradeEnabled !== false,
+    maxSpreadPercent: item.maxSpreadPercent ?? null,
     targetPrice: alertMode === 'price' ? item.targetPrice : undefined,
     avgTargetPercent: alertMode === 'avg_percent' ? item.avgTargetPercent : undefined,
     avgWindowMinutes: alertMode === 'avg_percent' ? (item.avgWindowMinutes || DEFAULT_AVG_WINDOW_MINUTES) : undefined,

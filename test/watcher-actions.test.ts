@@ -15,6 +15,7 @@ function makeItem(fields: Partial<ResolvedWatchItem> & Pick<ResolvedWatchItem, '
     priceQueryMinBaseAmount: 1,
     tradeEnabled: true,
     tradeConfirmations: 2,
+    maxSpreadPercent: null,
     ...fields,
   };
 }
@@ -148,7 +149,7 @@ test('buildAlertMessage uses actual trade input and output token direction', () 
 
   assert.match(message, /BUY 1\.25 USDC → 1 SUI/);
   assert.match(message, /0\.8(?:0+)? USDC\/SUI/);
-  assert.match(message, /Quoted Price: <code>\$1\.100000<\/code>/);
+  assert.match(message, /Mid Price: <code>\$1\.100000<\/code>/);
   assert.match(message, /Quoted Size: <code>1000 SUI<\/code>/);
 });
 

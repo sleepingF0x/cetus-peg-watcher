@@ -1,4 +1,4 @@
-import { getTokenPrice } from '../cetus.js';
+import { getBidirectionalPrice, getTokenPrice } from '../cetus.js';
 import type { ResolvedConfig } from '../config.js';
 import type { CooldownManager } from '../cooldown/manager.js';
 import { formatPair } from '../formatters.js';
@@ -79,11 +79,11 @@ export class WatchGroupRunner {
   private async tick(): Promise<void> {
     const { group } = this;
     try {
-      const price = await getTokenPrice(group.baseToken, group.quoteToken, group.queryBaseAmount, {
+      const biPrice = await getBidirectionalPrice(group.baseToken, group.quoteToken, group.queryBaseAmount, {
         amountMode: 'human',
       });
 
-      if (price === null) {
+      if (biPrice === null) {
         log.error(
           { event: 'price_fetch_failed', pair: formatPair(group.baseToken, group.quoteToken) },
           'Failed to fetch price',
@@ -91,6 +91,7 @@ export class WatchGroupRunner {
         return;
       }
 
+      const { sellPrice, buyPrice, midPrice, spreadPercent } = biPrice;
       const now = Date.now();
       this.pruneHistory(now);
       const windowSummary = this.computeWindowAverages(now);
@@ -99,7 +100,10 @@ export class WatchGroupRunner {
         {
           event: 'monitor_tick',
           pair: formatPair(group.baseToken, group.quoteToken),
-          currentPrice: price,
+          sellPrice,
+          buyPrice,
+          midPrice,
+          spreadPercent,
           quotedBaseAmount: group.queryBaseAmount,
           windows: Array.from(windowSummary.entries())
             .map(([ms, avg]) => `${Math.round(ms / 60000)}m=${avg === null ? 'N/A' : `$${avg.toFixed(6)}`}`)
@@ -111,12 +115,12 @@ export class WatchGroupRunner {
       );
 
       for (const groupedItem of group.items) {
-        await this.processItem(groupedItem, price, now, windowSummary);
+        await this.processItem(groupedItem, midPrice, spreadPercent, now, windowSummary);
       }
 
       const shouldSample = group.items.some(({ ruleKey }) => !this.pauseRules.has(ruleKey));
       if (shouldSample) {
-        this.priceHistory.push({ timestamp: now, price });
+        this.priceHistory.push({ timestamp: now, price: midPrice });
       }
     } catch (error: unknown) {
       log.error(
@@ -156,10 +160,29 @@ export class WatchGroupRunner {
   private async processItem(
     { item, ruleKey, averageWindowMs }: GroupedWatchItem,
     price: number,
+    spreadPercent: number,
     now: number,
     windowSummary: Map<number, number | null>,
   ): Promise<void> {
     const { config, cooldown } = this;
+    const pair = formatPair(item.baseToken, item.quoteToken);
+
+    if (item.maxSpreadPercent !== null && spreadPercent > item.maxSpreadPercent) {
+      log.warn(
+        { event: 'spread_too_wide', pair, spreadPercent, maxSpreadPercent: item.maxSpreadPercent, ruleKey },
+        'Bid-ask spread exceeds limit — skipping tick',
+      );
+      await this.maybeSendOpsAlert(ruleKey, 'spread_too_wide', buildOpsAlertMessage({
+        title: 'Spread Too Wide',
+        pairSymbol: pair,
+        details: [
+          `Spread: <code>${spreadPercent.toFixed(2)}%</code> (limit: ${item.maxSpreadPercent}%)`,
+          `Reason: routing anomaly — tick skipped, no trade executed`,
+        ],
+      })).catch(() => {});
+      return;
+    }
+
     const avgWindowPrice = windowSummary.get(averageWindowMs) ?? null;
 
     const evaluation = evaluateWatchRule({
@@ -332,10 +355,28 @@ export class WatchGroupRunner {
     }, {
       shouldAlertFn: (key, secs) => cooldown.shouldAlert(key, secs),
       sendTelegramFn: sendTelegramMessage,
-      repriceFn: () => getTokenPrice(group.baseToken, group.quoteToken, item.priceQueryMinBaseAmount, {
-        forceRefresh: true,
-        amountMode: 'human',
-      }),
+      repriceFn: async () => {
+        const biPrice = await getBidirectionalPrice(group.baseToken, group.quoteToken, item.priceQueryMinBaseAmount, {
+          amountMode: 'human',
+        });
+        if (biPrice === null) return null;
+        if (item.maxSpreadPercent !== null && biPrice.spreadPercent > item.maxSpreadPercent) {
+          log.warn(
+            { event: 'reprice_spread_too_wide', pair: formatPair(item.baseToken, item.quoteToken), spreadPercent: biPrice.spreadPercent, maxSpreadPercent: item.maxSpreadPercent, ruleKey },
+            'Reprice spread exceeds limit — aborting trade',
+          );
+          await this.maybeSendOpsAlert(ruleKey, 'reprice_spread_too_wide', buildOpsAlertMessage({
+            title: 'Spread Too Wide (Reprice)',
+            pairSymbol: formatPair(item.baseToken, item.quoteToken),
+            details: [
+              `Spread: <code>${biPrice.spreadPercent.toFixed(2)}%</code> (limit: ${item.maxSpreadPercent}%)`,
+              `Reason: routing anomaly at reprice — trade aborted`,
+            ],
+          })).catch(() => {});
+          return null;
+        }
+        return biPrice.midPrice;
+      },
       executeTradeFn: (ctx) => executeTrade(config.trade, item, tradeSide!, {
         lockedCycleAvailableAmount: tradeCooldownKey
           ? this.tradeCycleBaseAvailable.get(tradeCooldownKey)
