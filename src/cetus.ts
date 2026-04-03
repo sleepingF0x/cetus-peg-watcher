@@ -17,7 +17,7 @@ export async function getBidirectionalPrice(
   baseToken: string,
   quoteToken: string,
   amount?: string | number | bigint,
-  options?: { amountMode?: 'raw' | 'human' },
+  options?: { forceRefresh?: boolean; amountMode?: 'raw' | 'human' },
 ): Promise<import('./pricing/oracle.js').BidirectionalPrice | null> {
   return defaultOracle.getBidirectionalPrice(baseToken, quoteToken, amount, options);
 }

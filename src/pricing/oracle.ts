@@ -33,13 +33,19 @@ export interface BidirectionalPrice {
   spreadPercent: number;
 }
 
+interface PriceQuote {
+  price: number;
+  amountIn: string;
+  amountOut: string;
+}
+
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 export class PriceOracle {
-  private readonly priceCache = new Map<string, { value: number | null; expiresAt: number }>();
-  private readonly inFlightRequests = new Map<string, Promise<number | null>>();
+  private readonly priceCache = new Map<string, { value: PriceQuote | null; expiresAt: number }>();
+  private readonly inFlightRequests = new Map<string, Promise<PriceQuote | null>>();
   private readonly decimalsCache = new Map<string, number>();
   private readonly httpsAgent: https.Agent;
 
@@ -77,6 +83,48 @@ export class PriceOracle {
     amount?: string | number | bigint,
     options?: PriceQueryOptions,
   ): Promise<number | null> {
+    const quote = await this.getQuote(baseToken, quoteToken, amount, options);
+    return quote?.price ?? null;
+  }
+
+  async getBidirectionalPrice(
+    baseToken: string,
+    quoteToken: string,
+    amount?: string | number | bigint,
+    options?: PriceQueryOptions,
+  ): Promise<BidirectionalPrice | null> {
+    const sellQuote = await this.getQuote(baseToken, quoteToken, amount, options);
+    if (sellQuote === null) {
+      return null;
+    }
+
+    const rawBuyQuote = await this.getQuote(quoteToken, baseToken, sellQuote.amountOut, {
+      amountMode: 'raw',
+      forceRefresh: options?.forceRefresh,
+    });
+
+    if (rawBuyQuote === null || rawBuyQuote.price === 0) {
+      return null;
+    }
+
+    const sellPrice = sellQuote.price;
+    // rawBuyQuote.price is returned as baseToken-per-quoteToken from the quote→base query.
+    // Invert it so both sides are expressed as quoteToken-per-baseToken.
+    const buyPrice = 1 / rawBuyQuote.price;
+    const midPrice = (sellPrice + buyPrice) / 2;
+    const spreadPercent = midPrice > 0
+      ? ((buyPrice - sellPrice) / midPrice) * 100
+      : 0;
+
+    return { sellPrice, buyPrice, midPrice, spreadPercent };
+  }
+
+  private async getQuote(
+    baseToken: string,
+    quoteToken: string,
+    amount?: string | number | bigint,
+    options?: PriceQueryOptions,
+  ): Promise<PriceQuote | null> {
     const forceRefresh = options?.forceRefresh === true;
     const amountMode = options?.amountMode ?? 'raw';
     const normalizedAmountKey = amount !== undefined && amount !== null
@@ -92,7 +140,7 @@ export class PriceOracle {
       if (inFlight) return inFlight;
     }
 
-    const requestPromise = this.fetchPrice(baseToken, quoteToken, amount, amountMode, cacheKey);
+    const requestPromise = this.fetchQuote(baseToken, quoteToken, amount, amountMode, cacheKey);
 
     // forceRefresh: skip in-flight map entirely — run independently, no coalescing
     if (forceRefresh) {
@@ -111,39 +159,13 @@ export class PriceOracle {
     }
   }
 
-  async getBidirectionalPrice(
-    baseToken: string,
-    quoteToken: string,
-    amount?: string | number | bigint,
-    options?: Omit<PriceQueryOptions, 'forceRefresh'>,
-  ): Promise<BidirectionalPrice | null> {
-    const [sellPrice, rawBuyPrice] = await Promise.all([
-      this.getPrice(baseToken, quoteToken, amount, options),
-      this.getPrice(quoteToken, baseToken, amount, options),
-    ]);
-
-    if (sellPrice === null || rawBuyPrice === null || rawBuyPrice === 0) {
-      return null;
-    }
-
-    // rawBuyPrice is quoteToken-per-baseToken expressed from the quote→base query,
-    // which returns baseToken-per-quoteToken. Invert to get quote-per-base.
-    const buyPrice = 1 / rawBuyPrice;
-    const midPrice = (sellPrice + buyPrice) / 2;
-    const spreadPercent = midPrice > 0
-      ? ((buyPrice - sellPrice) / midPrice) * 100
-      : 0;
-
-    return { sellPrice, buyPrice, midPrice, spreadPercent };
-  }
-
-  private async fetchPrice(
+  private async fetchQuote(
     baseToken: string,
     quoteToken: string,
     amount: string | number | bigint | undefined,
     amountMode: 'raw' | 'human',
     cacheKey: string,
-  ): Promise<number | null> {
+  ): Promise<PriceQuote | null> {
     const retries = 3;
     const backoffDelays = [1000, 2000, 4000];
 
@@ -183,9 +205,15 @@ export class PriceOracle {
         });
 
         if (response.data.code === 200 && response.data.data?.paths && response.data.data.paths.length > 0) {
-          const rawPrice = Number(BigInt(response.data.data.amount_out)) / Number(BigInt(queryAmount));
+          const amountIn = queryAmount;
+          const amountOut = response.data.data.amount_out;
+          const rawPrice = Number(BigInt(amountOut)) / Number(BigInt(amountIn));
           const computedPrice = rawPrice * Math.pow(10, baseDecimals - quoteDecimals);
-          return computedPrice;
+          return {
+            price: computedPrice,
+            amountIn,
+            amountOut,
+          };
         } else {
           log.error(
             {

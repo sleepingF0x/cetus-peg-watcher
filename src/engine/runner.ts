@@ -24,6 +24,11 @@ interface PricePoint {
   price: number;
 }
 
+interface ProcessItemResult {
+  keepsAverageHistoryEligible: boolean;
+  blocksAverageHistorySampling: boolean;
+}
+
 export interface GroupedWatchItem {
   item: ResolvedConfig['items'][number];
   ruleKey: string;
@@ -114,11 +119,15 @@ export class WatchGroupRunner {
         'Monitor snapshot',
       );
 
+      let keepsAverageHistoryEligible = false;
+      let blocksAverageHistorySampling = false;
       for (const groupedItem of group.items) {
-        await this.processItem(groupedItem, midPrice, spreadPercent, now, windowSummary);
+        const result = await this.processItem(groupedItem, midPrice, spreadPercent, now, windowSummary);
+        keepsAverageHistoryEligible ||= result.keepsAverageHistoryEligible;
+        blocksAverageHistorySampling ||= result.blocksAverageHistorySampling;
       }
 
-      const shouldSample = group.items.some(({ ruleKey }) => !this.pauseRules.has(ruleKey));
+      const shouldSample = keepsAverageHistoryEligible && !blocksAverageHistorySampling;
       if (shouldSample) {
         this.priceHistory.push({ timestamp: now, price: midPrice });
       }
@@ -163,9 +172,11 @@ export class WatchGroupRunner {
     spreadPercent: number,
     now: number,
     windowSummary: Map<number, number | null>,
-  ): Promise<void> {
+  ): Promise<ProcessItemResult> {
     const { config, cooldown } = this;
     const pair = formatPair(item.baseToken, item.quoteToken);
+    const usesAverageHistory = item.alertMode === 'avg_percent';
+    const isCurrentlyPaused = this.pauseRules.has(ruleKey);
 
     if (item.maxSpreadPercent !== null && spreadPercent > item.maxSpreadPercent) {
       log.warn(
@@ -180,7 +191,10 @@ export class WatchGroupRunner {
           `Reason: routing anomaly — tick skipped, no trade executed`,
         ],
       })).catch(() => {});
-      return;
+      return {
+        keepsAverageHistoryEligible: false,
+        blocksAverageHistorySampling: usesAverageHistory && !isCurrentlyPaused,
+      };
     }
 
     const avgWindowPrice = windowSummary.get(averageWindowMs) ?? null;
@@ -199,7 +213,10 @@ export class WatchGroupRunner {
 
     if (evaluation.isPaused) {
       this.hitCounts.delete(ruleKey);
-      return;
+      return {
+        keepsAverageHistoryEligible: false,
+        blocksAverageHistorySampling: false,
+      };
     }
 
     const { isConditionMet, triggerThreshold, tradeSide, hitCount, isAlertConfirmed } = evaluation;
@@ -233,7 +250,12 @@ export class WatchGroupRunner {
         item, ruleKey, tradeSide, tradeCooldownKey!,
         triggerThreshold, hitCount, evaluation.tradeConfirmedImmediately,
       );
-      if (!proceed) return;
+      if (!proceed) {
+        return {
+          keepsAverageHistoryEligible: usesAverageHistory,
+          blocksAverageHistorySampling: false,
+        };
+      }
     }
 
     if (!isConditionMet) {
@@ -252,6 +274,10 @@ export class WatchGroupRunner {
 
     // suppress unused-variable warning — now is used only to push into history in tick()
     void now;
+    return {
+      keepsAverageHistoryEligible: usesAverageHistory,
+      blocksAverageHistorySampling: false,
+    };
   }
 
   private async runTradePreChecks(
@@ -358,6 +384,7 @@ export class WatchGroupRunner {
       repriceFn: async () => {
         const biPrice = await getBidirectionalPrice(group.baseToken, group.quoteToken, item.priceQueryMinBaseAmount, {
           amountMode: 'human',
+          forceRefresh: true,
         });
         if (biPrice === null) return null;
         if (item.maxSpreadPercent !== null && biPrice.spreadPercent > item.maxSpreadPercent) {
