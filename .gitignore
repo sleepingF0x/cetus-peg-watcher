@@ -6,3 +6,4 @@ config.toml
 .sisyphus
 wallet.mnemonic
 *.mnemonic
+.worktrees/
