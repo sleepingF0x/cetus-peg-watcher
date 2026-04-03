@@ -167,3 +167,14 @@ priceQueryMinBaseAmount = 1000
 
 # 仅报警，不交易（覆盖全局 trade.enabled = true）
 # tradeEnabled = false
+
+# ── 双向点差守卫 ──────────────────────────────────────────────────────────────
+
+# 每次询价时同时查买卖两个方向，计算点差。点差超过此值则跳过本次 tick 和交易，
+# 并向 Telegram 发送 ops 告警。null（不填）表示禁用此守卫。
+#
+# 建议值参考：
+#   稳定币对（USDY/USDC、USDT/USDC）：2～3
+#   主流币对（SUI/USDC、BTC/USDC）  ：5～10
+#   低流动性长尾币                  ：不建议开启自动交易
+maxSpreadPercent = 2

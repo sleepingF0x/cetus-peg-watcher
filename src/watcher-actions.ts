@@ -95,15 +95,23 @@ export function buildAlertMessage(input: AlertMessageInput): string {
       const outputDecimals = input.tradeExecutionResult.outputDecimals ?? 6;
       const amountInFormatted = formatAmount(input.tradeExecutionResult.amountIn, inputDecimals, 4);
       const amountOutFormatted = formatAmount(input.tradeExecutionResult.amountOut, outputDecimals, 4);
-      const executedPrice = input.tradeExecutionResult.realizedPrice ?? calculateExecutedPrice(
+      const rawExecutedPrice = input.tradeExecutionResult.realizedPrice ?? calculateExecutedPrice(
         input.tradeExecutionResult.amountIn,
         input.tradeExecutionResult.amountOut,
         inputDecimals,
         outputDecimals,
       );
 
+      // rawExecutedPrice is always output/input. For BUY (input=quote, output=base),
+      // invert to express as quote/base so it matches the Quoted Price convention.
+      const isBuy = input.tradeExecutionResult.side === 'buy';
+      const executedPrice = isBuy && rawExecutedPrice !== null && rawExecutedPrice > 0
+        ? 1 / rawExecutedPrice
+        : rawExecutedPrice;
+      const executedPriceLabel = isBuy ? `${inputSymbol}/${outputSymbol}` : `${outputSymbol}/${inputSymbol}`;
+
       messageLines.push(`Trade: <code>${input.tradeExecutionResult.side.toUpperCase()} ${amountInFormatted} ${inputSymbol} → ${amountOutFormatted} ${outputSymbol}</code>`);
-      messageLines.push(`Executed Price: <code>${formatPrice(executedPrice)} ${outputSymbol}/${inputSymbol}</code>`);
+      messageLines.push(`Executed Price: <code>${formatPrice(executedPrice)} ${executedPriceLabel}</code>`);
     } else if (input.tradeExecutionResult.status === 'failure' && input.tradeExecutionResult.error) {
       messageLines.push(`Reason: <code>${input.tradeExecutionResult.error}</code>`);
     } else {
