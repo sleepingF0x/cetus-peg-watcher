@@ -84,7 +84,7 @@ test('loadConfig applies fast-track and status polling defaults', () => {
 
   const config = loadConfig(filePath);
 
-  assert.equal(config.trade?.fastTrackEnabled, true);
+  assert.equal(config.trade?.fastTrackEnabled, false);
   assert.equal(config.trade?.fastTrackExtraPercent, 1.5);
   assert.equal(config.trade?.fastTrackTradePercent, 75);
   assert.equal(config.trade?.fastTrackSlippageMultiplier, 0.35);

@@ -80,7 +80,7 @@ export function buildAlertMessage(input: AlertMessageInput): string {
     input.tradeExecutionResult ? (tradeTitleByStatus[input.tradeExecutionResult.status] ?? '🚨 <b>Price Alert + Trade</b>') : '🚨 <b>Price Alert</b>',
     `Pair: <code>${input.pairSymbol}</code>`,
     `Trigger: <code>${input.reason}</code>`,
-    `Quoted Price: <code>$${input.currentPrice.toFixed(6)}</code>`,
+    `Mid Price: <code>$${input.currentPrice.toFixed(6)}</code>`,
     `Quoted Size: <code>${formatDisplayAmount(input.quotedBaseAmount)} ${baseSymbol}</code>`,
   ];
 

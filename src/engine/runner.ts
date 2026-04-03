@@ -355,10 +355,28 @@ export class WatchGroupRunner {
     }, {
       shouldAlertFn: (key, secs) => cooldown.shouldAlert(key, secs),
       sendTelegramFn: sendTelegramMessage,
-      repriceFn: () => getTokenPrice(group.baseToken, group.quoteToken, item.priceQueryMinBaseAmount, {
-        forceRefresh: true,
-        amountMode: 'human',
-      }),
+      repriceFn: async () => {
+        const biPrice = await getBidirectionalPrice(group.baseToken, group.quoteToken, item.priceQueryMinBaseAmount, {
+          amountMode: 'human',
+        });
+        if (biPrice === null) return null;
+        if (item.maxSpreadPercent !== null && biPrice.spreadPercent > item.maxSpreadPercent) {
+          log.warn(
+            { event: 'reprice_spread_too_wide', pair: formatPair(item.baseToken, item.quoteToken), spreadPercent: biPrice.spreadPercent, maxSpreadPercent: item.maxSpreadPercent, ruleKey },
+            'Reprice spread exceeds limit — aborting trade',
+          );
+          await this.maybeSendOpsAlert(ruleKey, 'reprice_spread_too_wide', buildOpsAlertMessage({
+            title: 'Spread Too Wide (Reprice)',
+            pairSymbol: formatPair(item.baseToken, item.quoteToken),
+            details: [
+              `Spread: <code>${biPrice.spreadPercent.toFixed(2)}%</code> (limit: ${item.maxSpreadPercent}%)`,
+              `Reason: routing anomaly at reprice — trade aborted`,
+            ],
+          })).catch(() => {});
+          return null;
+        }
+        return biPrice.midPrice;
+      },
       executeTradeFn: (ctx) => executeTrade(config.trade, item, tradeSide!, {
         lockedCycleAvailableAmount: tradeCooldownKey
           ? this.tradeCycleBaseAvailable.get(tradeCooldownKey)

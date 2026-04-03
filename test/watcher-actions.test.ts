@@ -149,7 +149,7 @@ test('buildAlertMessage uses actual trade input and output token direction', () 
 
   assert.match(message, /BUY 1\.25 USDC → 1 SUI/);
   assert.match(message, /1\.25(?:0+)? SUI\/USDC/);
-  assert.match(message, /Quoted Price: <code>\$1\.100000<\/code>/);
+  assert.match(message, /Mid Price: <code>\$1\.100000<\/code>/);
   assert.match(message, /Quoted Size: <code>1000 SUI<\/code>/);
 });
 
