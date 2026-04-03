@@ -11,6 +11,7 @@ export interface ResolvedWatchItem {
   tradeConfirmations: number;
   priceQueryMinBaseAmount: number;
   tradeEnabled: boolean;
+  maxSpreadPercent: number | null;
   // price mode only
   targetPrice?: number;
   // avg_percent mode only

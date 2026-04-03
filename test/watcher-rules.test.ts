@@ -10,6 +10,7 @@ function makeItem(fields: Partial<ResolvedWatchItem> & Pick<ResolvedWatchItem, '
     tradeCooldownSeconds: 1800,
     priceQueryMinBaseAmount: 1,
     tradeEnabled: true,
+    maxSpreadPercent: null,
     ...fields,
   };
 }

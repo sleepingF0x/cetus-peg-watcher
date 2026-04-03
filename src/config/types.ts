@@ -16,6 +16,7 @@ export interface WatchItem {
   avgResumeFactor?: number;
   alertMode?: 'price' | 'avg_percent';
   tradeEnabled?: boolean;
+  maxSpreadPercent?: number;
 }
 
 export interface TradeConfig {

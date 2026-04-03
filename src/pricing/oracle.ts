@@ -26,6 +26,13 @@ export interface PriceQueryOptions {
   amountMode?: 'raw' | 'human';
 }
 
+export interface BidirectionalPrice {
+  sellPrice: number;    // base → quote: quote per base (e.g. USDC per USDY)
+  buyPrice: number;     // quote → base, inverted: quote per base (same units as sellPrice)
+  midPrice: number;
+  spreadPercent: number;
+}
+
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -102,6 +109,32 @@ export class PriceOracle {
     } finally {
       this.inFlightRequests.delete(cacheKey);
     }
+  }
+
+  async getBidirectionalPrice(
+    baseToken: string,
+    quoteToken: string,
+    amount?: string | number | bigint,
+    options?: Omit<PriceQueryOptions, 'forceRefresh'>,
+  ): Promise<BidirectionalPrice | null> {
+    const [sellPrice, rawBuyPrice] = await Promise.all([
+      this.getPrice(baseToken, quoteToken, amount, options),
+      this.getPrice(quoteToken, baseToken, amount, options),
+    ]);
+
+    if (sellPrice === null || rawBuyPrice === null || rawBuyPrice === 0) {
+      return null;
+    }
+
+    // rawBuyPrice is quoteToken-per-baseToken expressed from the quote→base query,
+    // which returns baseToken-per-quoteToken. Invert to get quote-per-base.
+    const buyPrice = 1 / rawBuyPrice;
+    const midPrice = (sellPrice + buyPrice) / 2;
+    const spreadPercent = midPrice > 0
+      ? ((buyPrice - sellPrice) / midPrice) * 100
+      : 0;
+
+    return { sellPrice, buyPrice, midPrice, spreadPercent };
   }
 
   private async fetchPrice(

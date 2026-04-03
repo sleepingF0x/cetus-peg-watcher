@@ -170,3 +170,55 @@ test('loadConfig throws when item price query size is not positive', () => {
 
   assert.throws(() => loadConfig(filePath), /item\[0\]\.priceQueryMinBaseAmount must be a positive number/);
 });
+
+test('loadConfig throws when maxSpreadPercent is out of range', () => {
+  const filePath = writeTempConfig({
+    telegram: { enabled: false },
+    items: [
+      {
+        id: 'sui-below',
+        baseToken: '0x2::sui::SUI',
+        condition: 'below',
+        targetPrice: 1.2,
+        maxSpreadPercent: 0,
+      },
+    ],
+  });
+
+  assert.throws(() => loadConfig(filePath), /item\[0\]\.maxSpreadPercent must be a number between 0 and 100/);
+});
+
+test('loadConfig resolves maxSpreadPercent when provided', () => {
+  const filePath = writeTempConfig({
+    telegram: { enabled: false },
+    items: [
+      {
+        id: 'sui-below',
+        baseToken: '0x2::sui::SUI',
+        condition: 'below',
+        targetPrice: 1.2,
+        maxSpreadPercent: 3,
+      },
+    ],
+  });
+
+  const config = loadConfig(filePath);
+  assert.equal(config.items[0].maxSpreadPercent, 3);
+});
+
+test('loadConfig defaults maxSpreadPercent to null when omitted', () => {
+  const filePath = writeTempConfig({
+    telegram: { enabled: false },
+    items: [
+      {
+        id: 'sui-below',
+        baseToken: '0x2::sui::SUI',
+        condition: 'below',
+        targetPrice: 1.2,
+      },
+    ],
+  });
+
+  const config = loadConfig(filePath);
+  assert.equal(config.items[0].maxSpreadPercent, null);
+});
